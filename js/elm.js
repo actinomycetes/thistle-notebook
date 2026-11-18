@@ -155,25 +155,61 @@ export class ELM {
     return out;
   }
 
-  // ---------- web search (OpenAI-hosted model + Responses API web search tool) ----------
-  async webSearch(model, query, size = 'medium') {
+  // ---------- web search ----------
+  // ELM's OpenAPI spec lists two routes (copied from OpenAI's schema; ELM's own help page does not mention web search):
+  //  A. /responses with the web_search_preview (or web_search) tool, on an OpenAI chat model
+  //  B. /chat/completions with web_search_options, on an OpenAI "*-search-preview" model
+  // A route only counts as working if the reply shows a real search (a web_search_call item or URL citations):
+  // a proxy that silently drops the tool would otherwise give an answer from memory that looks like search results.
+  webSearchRoutes(model) {
+    const routes = [
+      { name: 'Responses API + web_search_preview tool', model, tool: { type: 'web_search_preview', search_context_size: 'medium' } },
+      { name: 'Responses API + web_search tool', model, tool: { type: 'web_search' } },
+    ];
+    (this._models || []).filter(m => !m.local && /search/.test(m.id)).forEach(m => routes.push({ name: 'Chat completions + web_search_options', model: m.id, chat: true }));
+    return routes;
+  }
+
+  async _searchRoute(r, query) {
     const instructions = 'You are a research assistant. Search the web and report the most relevant, reliable, up-to-date ' +
       'findings for the query. Prefer peer-reviewed papers, preprints and official sources. Be concise and factual; cite every claim.';
-    let last;
-    for (const tool of [{ type: 'web_search_preview', search_context_size: size }, { type: 'web_search' }]) {
-      try {
-        const j = await this.req('/responses', { body: { model, instructions, input: query, tools: [tool] } });
-        let text = '', cites = [];
-        for (const item of j.output || []) if (item.type === 'message') for (const c of item.content || []) {
-          if (c.text) text += c.text;
-          for (const a of c.annotations || []) if (a.type === 'url_citation' && a.url) cites.push({ title: a.title || a.url, url: a.url.replace(/[?&]utm_source=openai$/, '') });
-        }
-        const seen = new Set();
-        cites = cites.filter(c => !seen.has(c.url) && seen.add(c.url));
-        return { text: text || j.output_text || '', citations: cites, model };
-      } catch (e) { last = e; if (e.status !== 400) throw e; }
+    let text = '', cites = [], searched = false;
+    const add = a => { if (a?.type === 'url_citation') { const u = a.url || a.url_citation?.url; if (u) cites.push({ title: a.title || a.url_citation?.title || u, url: u.replace(/[?&]utm_source=openai$/, '') }); } };
+    if (r.chat) {
+      const j = await this.req('/chat/completions', { body: { model: r.model, web_search_options: { search_context_size: 'medium' }, messages: [{ role: 'system', content: instructions }, { role: 'user', content: query }] } });
+      const msg = j.choices?.[0]?.message || {};
+      text = msg.content || ''; (msg.annotations || []).forEach(add);
+      searched = cites.length > 0;
+    } else {
+      const j = await this.req('/responses', { body: { model: r.model, instructions, input: query, tools: [r.tool] } });
+      for (const item of j.output || []) {
+        if (/web_search/.test(item.type || '')) searched = true;
+        if (item.type === 'message') for (const c of item.content || []) { if (c.text) text += c.text; (c.annotations || []).forEach(add); }
+      }
+      text ||= j.output_text || '';
+      searched ||= cites.length > 0;
     }
-    throw last;
+    const seen = new Set();
+    cites = cites.filter(c => !seen.has(c.url) && seen.add(c.url));
+    return { text, citations: cites, model: r.model, route: r.name, searched };
+  }
+
+  // Tries each route; returns the first real search. Throws an error whose .attempts lists every route's outcome.
+  async webSearch(model, query) {
+    const attempts = [];
+    for (const r of this.webSearchRoutes(model)) {
+      try {
+        const res = await this._searchRoute(r, query);
+        if (res.searched) return { ...res, attempts };
+        attempts.push({ route: r.name, model: r.model, ok: false, error: 'ELM answered, but no web search took place (the search tool appears to be ignored).' });
+      } catch (e) {
+        attempts.push({ route: r.name, model: r.model, ok: false, status: e.status, error: e.message });
+        if (e.status === 401 || e.status === 429 || e.status === 0) break; // key, quota or network: other routes will fail too
+      }
+    }
+    const err = new ELMError('Web search is not available through ELM with this key: ' + attempts.map(a => `${a.route} (${a.model}): ${a.error}`).join(' | '), attempts.at(-1)?.status || 0);
+    err.attempts = attempts;
+    throw err;
   }
 
   // ---------- audio ----------

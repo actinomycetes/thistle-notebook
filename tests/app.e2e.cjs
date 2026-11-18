@@ -6,9 +6,10 @@ const SP = __dirname, FX = path.join(SP, 'fixtures'), CDN = process.env.CDN_DIR 
 fs.mkdirSync(OUT, { recursive: true });
 const BASE = process.env.TN_URL || 'http://localhost:8765/thistle-notebook/index.html';
 const log = [], requests = [];
+let webMode = 'ok'; // 'ok' | 'ignored' (proxy drops the tool) | 'refused' (400)
 const ok = (c, m) => { log.push((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 
-const MODELS = ['Qwen/Qwen3.5-397B-A17B-FP8', 'mistralai/Mistral-Small-4-119B-2603', 'Snowflake/snowflake-arctic-embed-l-v2.0', 'gpt-4o-mini', 'gpt-5-mini', 'whisper-1', 'text-embedding-3-small'];
+const MODELS = ['Qwen/Qwen3.5-397B-A17B-FP8', 'mistralai/Mistral-Small-4-119B-2603', 'Snowflake/snowflake-arctic-embed-l-v2.0', 'gpt-4o-mini', 'gpt-5-mini', 'gpt-4o-mini-search-preview', 'whisper-1', 'text-embedding-3-small'];
 const embed = t => { const v = new Array(16).fill(0); for (const w of t.toLowerCase().split(/\W+/)) if (w) v[[...w].reduce((s, c) => s + c.charCodeAt(0), 0) % 16] += 1; return v; };
 function sse(text) {
   const parts = text.match(/[\s\S]{1,40}/g) || [''];
@@ -43,6 +44,12 @@ function chatReply(body) {
     if (p === '/models') return r.fulfill({ json: { data: MODELS.map(id => ({ id })) }, headers: cors });
     if (p === '/costs') return r.fulfill({ json: { usage: 1.2345, limit: 50, currency: 'GBP', asOf: '2026-11-18T10:00:00Z' }, headers: cors });
     if (p === '/embeddings') return r.fulfill({ json: { data: body.input.map((t, i) => ({ index: i, embedding: embed(t) })) }, headers: cors });
+    if (p === '/chat/completions' && body.web_search_options) {
+      if (webMode === 'refused') return r.fulfill({ status: 400, json: { error: { message: 'Unrecognized request argument supplied: web_search_options' } }, headers: cors });
+      return r.fulfill({ json: { choices: [{ message: { content: 'Search says Y.', annotations: webMode === 'ok' ? [{ type: 'url_citation', url_citation: { url: 'https://www.ed.ac.uk/news/x', title: 'News' } }] : [] } }] }, headers: cors });
+    }
+    if (p === '/responses' && webMode === 'refused') return r.fulfill({ status: 400, json: { error: { message: 'Tool type web_search_preview is not supported' } }, headers: cors });
+    if (p === '/responses' && webMode === 'ignored') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'From memory.', annotations: [] }] }] }, headers: cors });
     if (p === '/chat/completions') return r.fulfill({ body: sse(chatReply(body)), headers: { ...cors, 'Content-Type': 'text/event-stream' } });
     if (p === '/responses') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Web says X.', annotations: [{ type: 'url_citation', url: 'https://doi.org/10.1/abc', title: 'A paper' }] }] }] }, headers: cors });
     r.fulfill({ status: 404, json: { error: { message: 'nope' } }, headers: cors });
@@ -94,6 +101,27 @@ function chatReply(body) {
   await page.waitForSelector('.src-view');
   await page.keyboard.press('Escape');
   await page.uncheck('#webToggle');
+
+  // web search that ELM silently ignores → visible warning in the answer, option switched off
+  webMode = 'ignored';
+  await page.check('#webToggle');
+  await page.fill('#prompt', 'Any recent papers?'); await page.click('#btnSend');
+  await page.waitForFunction(() => document.querySelectorAll('.msg.assistant').length === 2 && !window.thistleNotebook.busy);
+  const lastWarn = await page.$eval('.msg.assistant:last-child .warn-box', e => e.textContent).catch(() => '');
+  ok(lastWarn.includes('Web search did not run') && lastWarn.includes('no web search took place'), 'ignored search tool → warning in the answer (not fake results)');
+  ok(await page.$eval('#webToggle', t => t.disabled && !t.checked), 'web search option switched off after ELM refused every route');
+  // ⚙ Settings → Test web search: per-route diagnosis
+  webMode = 'refused';
+  await page.click('#btnSettings'); await page.click('#modalBody button:has-text("Test web search")');
+  await page.waitForSelector('#modalBody table.diag');
+  const diag = await page.$$eval('#modalBody table.diag tr', trs => trs.map(t => t.textContent));
+  ok(diag.length === 4 && diag.some(t => t.includes('web_search_options') && t.includes('400')) && diag.some(t => t.includes('not supported')), 'test lists every route with ELM\'s reply');
+  await page.screenshot({ path: path.join(OUT, '1b-websearch-test.png') });
+  webMode = 'ok';
+  await page.click('#modalBody button:has-text("Test web search")');
+  await page.waitForFunction(() => document.querySelector('#modalBody .hint-box b')?.textContent.includes('works'));
+  ok(await page.$eval('#webToggle', t => !t.disabled), 'web search option back on after a successful test');
+  await page.keyboard.press('Escape');
 
   // ANOVA → Thistle Plot (auto-run) → results → interpretation
   await page.fill('#prompt', 'Run an ANOVA on body weight');
@@ -196,7 +224,7 @@ function chatReply(body) {
   await page.click('#btnCloseDrawer');
   await page.screenshot({ path: path.join(OUT, '5-light.png') });
 
-  const realErr = errors.filter(e => !/example\.com|Content Security Policy|Failed to fetch/.test(e));
+  const realErr = errors.filter(e => !/example\.com|Content Security Policy|Failed to fetch|status of 400/.test(e)); // 400s: deliberate 'refused' web-search mock
   ok(!realErr.length, 'no page errors' + (realErr.length ? ': ' + realErr.join(' | ') : ''));
   console.log(log.join('\n'));
   await browser.close();

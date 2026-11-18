@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.2.1). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.2.2). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -19,7 +19,7 @@ original data.
 | Text needed for a question | **ELM only** (`https://elm.edina.ac.uk/api/v1`). 🏛 models run in University data centres; ☁ models are OpenAI under ELM's zero-data-retention terms. |
 | Images, scanned PDF pages | ELM vision model (on-campus Qwen 3.5 / Mistral Small 4 by default). |
 | Audio | ELM transcription (`whisper-1`, an OpenAI model, so it is blocked in on-campus-only notebooks). |
-| Web search (optional) | Only your question, through ELM's Responses API web-search tool (OpenAI). Off in on-campus-only notebooks. |
+| Web search (optional) | Only your question, through ELM to an OpenAI model's web-search tool, **if ELM allows it for your key** (see below). Off in on-campus-only notebooks. |
 | Statistics | Thistle Plot, running in the same browser tab. |
 
 The page's Content-Security-Policy (`connect-src 'self' https://elm.edina.ac.uk`) makes the **browser itself** refuse any
@@ -50,7 +50,7 @@ The app's **❓ Help** links to all of these:
 
 ## What it does
 - **Research papers**: briefing documents, literature comparison tables, gaps and contradictions, **hypothesis
-  generation** (testable, with proposed experiments), study guides. Optional web search adds cited `[W1]` findings.
+  generation** (testable, with proposed experiments), study guides. Optional web search adds cited `[W1]` findings (if available, see below).
 - **Marking**: rubric + question + answers. Studio marks **each submission separately** against the rubric, with a
   per-criterion table, quoted evidence, flags for the marker, and a summary table of suggested marks. It can also check
   marking consistency, draft a model answer and marking guide, and draft student feedback. Every decision is yours.
@@ -67,6 +67,15 @@ The app's **❓ Help** links to all of these:
   embedding search (embeddings from ELM, on-campus model preferred).
 - **Model switching**: any chat model ELM offers your institution, with optional reasoning effort and OpenAI flex tier.
   ELM spend is shown in the header.
+
+## Web search and ELM
+ELM's API description lists OpenAI's web-search features, but ELM's own help does not mention web search, and whether
+its proxy allows it may depend on ELM's configuration. **⚙ Settings → 🌐 Test web search** tries each possible route
+with your key (Responses API `web_search_preview` / `web_search` tool; chat completions with a `*-search-preview` model)
+and shows ELM's reply for each. A search only counts if ELM's reply proves a web search happened. If ELM silently ignored
+the tool, the model would answer from memory and the answer would look like search results without being one. If no route
+works, the 🌐 option is switched off with the reason. An answer whose search failed says so at the top.
+Everything else (sources, Studio, Thistle Plot) works without web search. Web search never runs in on-campus-only notebooks.
 
 ## Thistle suite integration
 - **Statistics run in Thistle Plot.** When a test is needed, the assistant writes a small analysis request: the test
@@ -107,9 +116,9 @@ exports (file structure checked),
 `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.2.1
+## Known limitations of v0.2.2
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
-  check first: embeddings with the on-campus model, the web-search tool on `/responses`, and reasoning output from Qwen.
+  check first: embeddings with the on-campus model and reasoning output from Qwen. Web search depends on ELM (⚙ Test web search).
 - Notebooks live in one browser profile; clearing site data deletes them, so save `.tnote` files for anything important.
 - One request may not exceed ELM's 10 MiB limit; very large source sets are searched rather than sent whole.
 - Scanned PDFs: the first 60 scanned pages are read. Excel dates appear as serial numbers. No web-page import (by design).

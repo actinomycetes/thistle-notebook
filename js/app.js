@@ -17,6 +17,7 @@ const SETTINGS_DEFAULTS = {
   baseUrl: DEFAULT_BASE, chatModel: '', embeddingModel: '', searchModel: '', visionModel: '', transcriptionModel: '',
   serviceTier: 'auto', fulltextBudget: 90000, retrievalChunks: 40, maxOutputTokens: 8000,
   tpUrl: '', tfUrl: '', autoRunRounds: 2,
+  webSearchStatus: '', webSearchDetail: '', // '' = not tried, 'ok', 'unavailable' (set by a real search or ⚙ Test web search)
 };
 function loadSettings() {
   let s = {}; try { s = JSON.parse(localStorage.getItem('tn.settings') || '{}'); } catch { }
@@ -84,6 +85,17 @@ function updateReasonSelect() {
   if ($('#reasonSelect').selectedOptions[0]?.disabled) $('#reasonSelect').value = 'default';
   $('#reasonSelect').title = info.reasoning.length ? `This model supports: ${info.reasoning.join(', ')}` : 'This model has no adjustable reasoning';
 }
+function renderWebToggle() {
+  const on = onCampus(), off = S.settings.webSearchStatus === 'unavailable';
+  $('#webToggle').disabled = on || off; if (on || off) $('#webToggle').checked = false;
+  $('#webWrap').style.opacity = on || off ? .5 : 1;
+  $('#webWrap').title = on ? 'Web search is off in on-campus-only notebooks (it would use OpenAI and the public web).'
+    : off ? `Web search did not work through ELM with your key: ${S.settings.webSearchDetail || ''} — ⚙ Settings → Test web search to try again.`
+    : 'Search the web through ELM (OpenAI-hosted model). Only your question is sent, not your sources.';
+}
+function setWebStatus(status, detail = '') {
+  S.settings.webSearchStatus = status; S.settings.webSearchDetail = String(detail).slice(0, 300); saveSettings(S.settings); renderWebToggle();
+}
 function renderPrivacy() {
   const b = $('#privacyBadge'), on = onCampus();
   b.className = 'badge-hdr ' + (on ? 'campus' : 'cloud');
@@ -94,8 +106,7 @@ function renderPrivacy() {
     ? '<b>🏛 On-campus only.</b> Sources are processed in this browser; requests go only to ELM\'s University-hosted models.'
     : '<b>Privacy.</b> Files are read in this browser. Only the text needed for each request is sent to ELM; ☁ models are OpenAI with zero data retention. For student work or personal data, switch this notebook to on-campus only (✎ Notebook).')
     + ' Nothing is sent anywhere else: the page blocks all other connections.';
-  $('#webToggle').disabled = on; if (on) $('#webToggle').checked = false;
-  $('#webWrap').style.opacity = on ? .5 : 1;
+  renderWebToggle();
   renderModelSelect();
 }
 async function refreshCosts() {
@@ -268,6 +279,7 @@ function messageEl(m) {
     h('ol', {}, meta.web.citations.map(c => h('li', {}, h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.title))))));
   const doc = { title: firstLine(m.content), content: m.content, cites: meta.cites || {}, web: meta.web };
   bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)), tableTools: tableTools(doc) }));
+  if (meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, '🌐 Web search did not run, so this answer uses only your sources and the model\'s own knowledge. ', h('details', {}, h('summary', {}, 'Why'), meta.webError)));
   if (meta.error) bubble.append(h('div', { class: 'err-box' }, meta.error));
   wrap.append(who, bubble, h('div', { class: 'msg-actions' },
     h('button', { class: 'btn', onclick: () => saveNote(m.content.replace(/```thistle-plot[\s\S]*?```/g, ''), firstLine(m.content), meta.cites, meta.web) }, '🗒 Save as note'),
@@ -325,8 +337,11 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
     let web = null;
     if ($('#webToggle').checked && !onCampus() && depth === 0) {
       el.querySelector('.who').textContent = `🌐 searching the web via ${searchModel()}…`;
-      try { web = await S.elm.webSearch(searchModel(), query); a.meta.web = web; }
-      catch (e) { toast('Web search failed: ' + e.message, true); }
+      try { web = await S.elm.webSearch(searchModel(), query); a.meta.web = web; setWebStatus('ok', web.route); }
+      catch (e) {
+        a.meta.webError = e.message;
+        if (e.attempts) setWebStatus('unavailable', e.attempts.map(x => x.error).join(' / ')); // ELM refused every route
+      }
     }
     const datasets = sources.filter(s => s.tables).map(s => ({ name: s.name, tables: s.tables }));
     const sys = systemPrompt({ mode: mode || $('#modeSelect').value, tone: tone ?? $('#toneSelect').value, hasSources: !!sources.length, ctxMode,
@@ -670,6 +685,7 @@ function settingsDialog() {
     h('div', { class: 'hint-box' }, 'Your key is kept only in this browser. Request one on ELM (API keys → New Key Request). ELM asks API users to try lower-cost models first and to use flex where possible.'),
     status,
     h('div', { class: 'modal-foot' },
+      h('button', { class: 'btn', title: 'Tries each way ELM might offer web search, with one short query (costs a few pence at most)', onclick: () => { apply(); testWebSearch(status); } }, '🌐 Test web search'),
       h('button', { class: 'btn', onclick: async () => { apply(); status.innerHTML = '<div class="hint">Testing…</div>'; try { const ms = await S.elm.models(true); status.innerHTML = `<div class="hint-box">✅ Connected: ${ms.length} models (${ms.filter(m => m.local).length} on-campus).</div>`; } catch (e) { status.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; } } }, 'Test connection'),
       h('button', { class: 'btn primary', onclick: () => { apply(); closeModal(); loadModels(true); } }, 'Save'))));
   function apply() {
@@ -681,6 +697,27 @@ function settingsDialog() {
 }
 
 const ELM_INFO = 'https://information-services.ed.ac.uk/computing/comms-and-collab/elm';
+async function testWebSearch(box) {
+  box.innerHTML = '<div class="hint">Testing web search through ELM…</div>';
+  try { await S.elm.models(true); S.models = S.elm._models; } catch (e) { box.innerHTML = `<div class="err-box">${esc(e.message)}</div>`; return; }
+  const q = 'What is the most recent news item on the University of Edinburgh website (ed.ac.uk)? Give its date and cite the page.';
+  const rows = [];
+  for (const r of S.elm.webSearchRoutes(searchModel())) {
+    try {
+      const res = await S.elm._searchRoute(r, q);
+      rows.push({ ...r, ok: res.searched, msg: res.searched ? `✅ works — ${res.citations.length} web source(s), e.g. ${res.citations[0]?.url || '—'}` : '⚠ ELM answered, but no web search took place (the search tool seems to be ignored).' });
+    } catch (e) { rows.push({ ...r, ok: false, msg: `❌ ${e.status ? e.status + ': ' : ''}${e.message}` }); }
+  }
+  const ok = rows.find(r => r.ok);
+  setWebStatus(ok ? 'ok' : 'unavailable', ok ? ok.name : rows.map(r => r.msg).join(' / '));
+  box.innerHTML = '';
+  box.append(h('div', { class: ok ? 'hint-box' : 'warn-box' },
+    h('b', {}, ok ? `Web search works with your key (${ok.name}, ${ok.model}).` : 'Web search is not available through ELM with your key. The 🌐 Web search option is now switched off; everything else works as before.'),
+    h('table', { class: 'diag' }, h('tr', {}, h('th', {}, 'Route'), h('th', {}, 'Model'), h('th', {}, 'Result')),
+      rows.map(r => h('tr', {}, h('td', {}, r.name), h('td', {}, r.model), h('td', {}, r.msg)))),
+    ok ? null : h('div', {}, 'If ELM adds web search later, run this test again. To ask whether it is planned: edina@ed.ac.uk.')));
+}
+
 function helpDialog() {
   modal('Thistle Notebook — help', renderMarkdown(`
 **Thistle Notebook v${APP_VERSION} (beta)** is a source-grounded research assistant in the Thistle suite. It runs entirely in your browser and talks only to **ELM** (University of Edinburgh). Check important outputs yourself: AI text can be wrong, and suggested marks are suggestions.
@@ -689,6 +726,7 @@ function helpDialog() {
 - Files are read **in this browser**. Notebooks are stored in this browser (IndexedDB); **💾 Save** writes a \`.tnote\` file you can keep or share.
 - For each question, only the needed text is sent to ELM. 🏛 models run in University data centres; ☁ models are OpenAI under ELM's zero-data-retention terms.
 - **On-campus only** notebooks (✎ Notebook) never use ☁ models or web search — use this for student work, personal or unpublished data.
+- **🌐 Web search** only works if ELM allows it for your key: **⚙ Settings → 🌐 Test web search** checks this and shows ELM's reply. If it is unavailable, the option is switched off; everything else works without it.
 - The page's security policy makes the browser block every connection except to ELM, so nothing can be sent elsewhere.
 
 ### Sources

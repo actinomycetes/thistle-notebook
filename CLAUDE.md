@@ -32,7 +32,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   attribute (Safari/iPad). iPad: drop `accept` on file inputs (`IS_IOS`).
 
 ## Architecture map
-- `js/elm.js` ELM client (`classify` model metadata, streaming SSE chat, embeddings, Responses web search,
+- `js/elm.js` ELM client (`classify` model metadata, streaming SSE chat, embeddings, web search over several routes
+  (`webSearchRoutes`; a route only counts if the reply proves a search happened — ELM support is unconfirmed),
   transcription, `/costs`; drops unsupported optional params and retries).
 - `js/ingest.js` parsers (pdf.js, mammoth, own zip-based pptx/xlsx readers, PapaParse, vision for images/scans, audio)
   and `profileTable` (data summary given to the model). `js/zip.js` unzip/zip (DecompressionStream).
