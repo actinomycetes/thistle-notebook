@@ -680,6 +680,7 @@ function settingsDialog() {
   }
 }
 
+const ELM_INFO = 'https://information-services.ed.ac.uk/computing/comms-and-collab/elm';
 function helpDialog() {
   modal('Thistle Notebook — help', renderMarkdown(`
 **Thistle Notebook v${APP_VERSION} (beta)** is a source-grounded research assistant in the Thistle suite. It runs entirely in your browser and talks only to **ELM** (University of Edinburgh). Check important outputs yourself: AI text can be wrong, and suggested marks are suggestions.
@@ -699,12 +700,22 @@ PDF (scanned pages are read by a vision model), Word, PowerPoint, Excel/CSV, tex
 - **Data analysis**: design, quality problems, appropriate tests, next experiments.
 - **Scientific writing**: abstracts, lay summaries, introductions, discussions, rewrites — choose the **Audience** (lay public, scientists, field experts).
 
-### Statistics with Thistle Plot and Thistle Flow
+### Exports
 Reports, notes and answers export to Word, Excel, CSV, Markdown, HTML or PDF (⤓ Export); each table also has its own Excel/CSV/copy buttons.
 
-### Statistics
+### Statistics with Thistle Plot and Thistle Flow
 The AI never calculates p-values. It writes an analysis request (test + which columns), the app builds Thistle Plot's table **from your original file**, Thistle Plot runs the test here in the browser, and the results go back to the AI for interpretation. Each card can **⤓ .tplot** (open in Thistle Plot) or **👁 Open in Thistle Plot**.
 In **🔬 Thistle apps → Thistle Flow**, load FCS files and gate as usual, then **⬇ Add TF statistics as source** to analyse population statistics here.
+
+### ELM policies and guidance (University of Edinburgh)
+Using Thistle Notebook means using ELM: its policies and your School's rules on AI apply. Links open in a new tab.
+- **Policies:** [Our AI principles](${ELM_INFO}/our-ai-principles) · [Responsible AI and safety](${ELM_INFO}/responsible-ai-and-safety) · [Use of Operational Data Policy (PDF)](https://edwebcontent.ed.ac.uk/sites/default/files/atoms/files/operational-data-policy.pdf) · [Legal and security perspective](${ELM_INFO}/generative-ai-guidance-for-staff/legal-and-security-perspective)
+- **Data protection:** [Generative AI and data protection](https://data-protection.ed.ac.uk/guidance/generative-artificial-intelligence) · [AI and privacy](https://information-services.ed.ac.uk/ai-privacy)
+- **Guidance:** [for staff](${ELM_INFO}/generative-ai-guidance-for-staff) · [for students](${ELM_INFO}/guidance-for-working-with-generative-ai) · [for postgraduate research students](${ELM_INFO}/generative-ai-guidelines-for-students/generative-ai) · [agentic AI](${ELM_INFO}/elm-competency-centre/university-of-edinburgh-specific-guidance-on-agentic-ai) · [acknowledging AI in academic work (Library)](https://edinburgh-uk.libguides.com/gen-AI/guidance)
+- **ELM service:** [About ELM](${ELM_INFO}) · [FAQs](${ELM_INFO}/elm-frequently-asked-questions-faqs) · [Availability and entitlement](${ELM_INFO}/availability-and-entitlement) · [Help and support](${ELM_INFO}/help-and-support)
+- **API:** [API keys](https://elm.edina.ac.uk/documentation/docs/13-keys/) · [Proxy API reference](https://elm.edina.ac.uk/elm/help/proxy-api) (sign in to ELM to view) · questions about keys: edina@ed.ac.uk
+
+Marking with AI help: follow your School's assessment policy; the marker remains responsible for every mark and comment.
 `), {});
 }
 

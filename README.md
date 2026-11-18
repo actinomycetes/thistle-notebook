@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.2.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.2.1). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -29,6 +29,17 @@ kept on the device if you tick "Remember".
 
 **On-campus-only notebooks** (tick it when creating the notebook, or use ✎ Notebook) can use only University-hosted
 models, and web search is disabled. Use this for exam scripts, dissertations, unpublished or personal data.
+
+## ELM policies
+Using Thistle Notebook means using ELM, so the University's ELM policies and your School's rules on AI apply.
+The app's **❓ Help** links to all of these:
+- [Our AI principles](https://information-services.ed.ac.uk/computing/comms-and-collab/elm/our-ai-principles)
+- [Responsible AI and safety](https://information-services.ed.ac.uk/computing/comms-and-collab/elm/responsible-ai-and-safety)
+- [Use of Operational Data Policy (PDF)](https://edwebcontent.ed.ac.uk/sites/default/files/atoms/files/operational-data-policy.pdf)
+- [Generative AI and data protection](https://data-protection.ed.ac.uk/guidance/generative-artificial-intelligence)
+- Guidance for [staff](https://information-services.ed.ac.uk/computing/comms-and-collab/elm/generative-ai-guidance-for-staff), [students](https://information-services.ed.ac.uk/computing/comms-and-collab/elm/guidance-for-working-with-generative-ai) and [postgraduate researchers](https://information-services.ed.ac.uk/computing/comms-and-collab/elm/generative-ai-guidelines-for-students/generative-ai)
+- [ELM FAQs](https://information-services.ed.ac.uk/computing/comms-and-collab/elm/elm-frequently-asked-questions-faqs)
+- [API keys](https://elm.edina.ac.uk/documentation/docs/13-keys/)
 
 ## Getting started
 1. Request an ELM API key: ELM → API keys → New Key Request.
@@ -96,7 +107,7 @@ exports (file structure checked),
 `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.2.0
+## Known limitations of v0.2.1
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model, the web-search tool on `/responses`, and reasoning output from Qwen.
 - Notebooks live in one browser profile; clearing site data deletes them, so save `.tnote` files for anything important.

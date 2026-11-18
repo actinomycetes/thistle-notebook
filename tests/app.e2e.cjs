@@ -182,6 +182,13 @@ function chatReply(body) {
   ok(await page.$eval('#modelSelect option[value="gpt-4o-mini"]', o => o.disabled), 'OpenAI models disabled in on-campus notebook');
   ok(await page.$eval('#webToggle', o => o.disabled), 'web search disabled in on-campus notebook');
 
+  // Help links to the ELM policies (open in a new tab, no referrer)
+  await page.click('#btnHelp');
+  const links = await page.$$eval('#modalBody a', as => as.map(a => ({ href: a.href, target: a.target, rel: a.rel })));
+  ok(links.filter(l => /information-services\.ed\.ac\.uk|data-protection\.ed\.ac\.uk|edwebcontent\.ed\.ac\.uk/.test(l.href)).length >= 12, 'help links to ELM policies and guidance');
+  ok(links.some(l => l.href.includes('operational-data-policy.pdf')) && links.every(l => l.target === '_blank' && l.rel.includes('noopener')), 'policy links open safely in a new tab');
+  await page.keyboard.press('Escape');
+
   // light theme screenshot + TP drawer
   await page.click('#btnTheme');
   await page.click('#btnThistle'); await page.waitForTimeout(800);
