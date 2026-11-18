@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.2.3). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.3.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -21,6 +21,7 @@ original data.
 | Audio | ELM transcription (`whisper-1`, an OpenAI model, so it is blocked in on-campus-only notebooks). |
 | Web search (optional) | Only your question, through ELM to an OpenAI model's web-search tool, **if ELM allows it for your key** (see below). Off in on-campus-only notebooks. |
 | Statistics | Thistle Plot, running in the same browser tab. |
+| 🔎 Suggested searches | Written by ELM, shown as links. A search site (PubMed, Europe PMC, Google Scholar, bioRxiv) receives **only the search words, only when you click** a link. The app never contacts these sites. |
 
 The page's Content-Security-Policy (`connect-src 'self' https://elm.edina.ac.uk`) makes the **browser itself** refuse any
 other connection, so a bug or a malicious file cannot send data anywhere else. Libraries are loaded from cdnjs with
@@ -84,6 +85,15 @@ exports) works without it.
   specific searches (database + query) you can run yourself.
 - **Web search never runs in on-campus-only notebooks.**
 
+### 🔎 Suggest searches (instead of web search)
+Click **🔎 Suggest searches**, or the button in an answer's "No web search" note. ELM writes 3–6 targeted searches for
+the question and the current answer: PubMed (with MeSH terms and field tags), Europe PMC, Google Scholar and bioRxiv.
+Each search has an **Open** link, a **Since <year>** link (last 3 years) and a copy button. Download the papers you want,
+add them with ＋ Add sources, and ask again, so that updates come from papers you have read.
+
+Only the question and an excerpt of the answer go to ELM, not your sources. The model is told never to put personal or
+confidential details in a query, and on-campus-only notebooks remind you to check the words before opening a link.
+
 ## Thistle suite integration
 - **Statistics run in Thistle Plot.** When a test is needed, the assistant writes a small analysis request: the test
   plus which columns hold groups, values and subjects. Thistle Notebook builds TP's table **deterministically from your
@@ -123,7 +133,7 @@ exports (file structure checked),
 `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.2.3
+## Known limitations of v0.3.0
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional

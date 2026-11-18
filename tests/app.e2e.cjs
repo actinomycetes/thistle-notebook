@@ -21,6 +21,7 @@ function sse(text) {
 }
 function chatReply(body) {
   const sys = body.messages[0].content, last = body.messages[body.messages.length - 1].content;
+  if (sys.startsWith('You help a scientist find literature')) return 'Here you go:\n[{"db":"pubmed","query":"\\"RNA, Circular\\"[Mesh] AND stability[tiab]","why":"Checks stability claims"},{"db":"Google Scholar","query":"circRNA half-life exonuclease","why":"Recent measurements"},{"db":"biorxiv","query":"circRNA decay","why":"Preprints"},{"db":"wikipedia","query":"x","why":"dropped"}]';
   if (sys.includes('# NOW')) return 'Interpretation: Thistle Plot reports a one-way ANOVA. DrugA differs from Vehicle; see the post-hoc table. [1]';
   if (/anova/i.test(last)) return 'I will run a one-way ANOVA in Thistle Plot.\n\n```thistle-plot\n' + JSON.stringify({ title: 'Weight by treatment', test: 'anova', dataset: 'mice.csv', layout: 'long', group: 'Treatment', value: 'Weight_g', control: 'Vehicle', options: { 'Post-hoc correction': 'Tukey', 'Bogus option': 'x' }, why: '3 independent groups' }) + '\n```\n';
   if (/comparison table/i.test(last)) return '## Comparison table\n\n| Citation | Research question | Design | Sample size | Key methods | Main findings | Limitations (authors) | Limitations (observed) |\n|---|---|---|---|---|---|---|---|\n| Ma et al., 2025 [1] | Roles of circRNA peptides | Review | N/A | **Synthesis** | Peptides exist [1, 2] | Detection limited | No primary data |\n| Sanger 1976 [3] | Viroid structure | EM, µ-scale | 12 | Electron microscopy | Circular RNA, ±5% | Old methods | Small n |\n\n## Patterns\n\n- Stability recurs [1].';
@@ -55,7 +56,9 @@ function chatReply(body) {
     if (p === '/responses' && webMode === 'refused') return refuse(r, 'Tool type web_search_preview is not supported');
     if (p === '/chat/completions' && rejectReasoning && body.reasoning_effort) return refuse(r, 'reasoning_effort not supported');
     if (p === '/responses' && webMode === 'ignored') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'From memory.', annotations: [] }] }] }, headers: cors });
-    if (p === '/chat/completions') return r.fulfill({ body: sse(chatReply(body)), headers: { ...cors, 'Content-Type': 'text/event-stream' } });
+    if (p === '/chat/completions') return body.stream
+      ? r.fulfill({ body: sse(chatReply(body)), headers: { ...cors, 'Content-Type': 'text/event-stream' } })
+      : r.fulfill({ json: { choices: [{ message: { content: chatReply(body) } }] }, headers: cors });
     if (p === '/responses') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Web says X.', annotations: [{ type: 'url_citation', url: 'https://doi.org/10.1/abc', title: 'A paper' }] }] }] }, headers: cors });
     r.fulfill({ status: 404, json: { error: { message: 'nope' } }, headers: cors });
   });
@@ -121,7 +124,8 @@ function chatReply(body) {
   await page.waitForSelector('#modalBody table.diag');
   const diag = await page.$$eval('#modalBody table.diag tr', trs => trs.map(t => t.textContent));
   ok(diag.length === 4 && diag.slice(1).every(t => t.includes('ELM refused this request')), 'refused routes reported as refused, not "could not reach ELM"');
-  ok((await page.textContent('#modalBody pre.cmd')).includes('read -s -p "ELM key: "'), 'Terminal command to reveal ELM\'s hidden reason, key not embedded');
+  const cmd = await page.textContent('#modalBody pre.cmd');
+  ok(cmd.startsWith("printf 'ELM key: '; read -rs ELM_API_KEY; echo") && !cmd.includes('elm-test-key'), 'Terminal command works in zsh and bash; key not embedded');
   await page.screenshot({ path: path.join(OUT, '1b-websearch-test.png') });
   webMode = 'ok';
   await page.click('#modalBody button:has-text("Test web search")');
@@ -137,6 +141,21 @@ function chatReply(body) {
   const webNote = await page.$eval('.msg.assistant:last-child .warn-box', e => e.textContent).catch(() => '');
   ok(webNote.includes('No web search for this answer') && webNote.includes('box was not ticked'), 'web request in words → note explains why no search ran');
   ok(requests.filter(r => r.p === '/chat/completions').pop().body.messages[0].content.includes('Web search is NOT available'), 'model told that web search is not available');
+
+  // 🔎 Suggest searches: ELM writes queries, the app only builds links (no request to the search sites)
+  const outside = []; page.on('request', rq => { const u = new URL(rq.url()); if (!/^(localhost|elm\.edina\.ac\.uk|cdnjs\.cloudflare\.com)$/.test(u.hostname) && u.protocol.startsWith('http')) outside.push(u.hostname); });
+  await page.click('.msg.assistant:last-child .warn-box button:has-text("Suggest searches")');
+  await page.waitForSelector('.msg.searches .search-list li');
+  const sug = await page.$$eval('.msg.searches .search-list li', lis => lis.map(li => ({ text: li.textContent, links: [...li.querySelectorAll('a')].map(a => ({ href: a.href, target: a.target, rel: a.rel })) })));
+  ok(sug.length === 3 && sug[0].text.startsWith('PubMed') && sug[1].text.startsWith('Google Scholar') && sug[2].text.startsWith('bioRxiv'), 'suggested searches listed per database (unknown database dropped)');
+  const pm = sug[0].links[0].href, pmSince = sug[0].links[1].href, yr = new Date().getFullYear();
+  ok(pm.startsWith('https://pubmed.ncbi.nlm.nih.gov/?term=') && decodeURIComponent(pm.split('term=')[1].replace(/\+/g, ' ')) === '"RNA, Circular"[Mesh] AND stability[tiab]', 'PubMed link carries the exact query');
+  ok(pmSince.includes(`filter=years.${yr - 3}-${yr}`) && sug[1].links[1].href.includes(`as_ylo=${yr - 3}`), '"since" links filter to the last 3 years');
+  ok(sug.flatMap(x => x.links).every(l => l.target === '_blank' && l.rel.includes('noreferrer')), 'links open in a new tab without referrer');
+  await page.screenshot({ path: path.join(OUT, '1c-searches.png') });
+  ok(!outside.length, 'no request to any search site (only links)' + (outside.length ? ': ' + outside.join(',') : ''));
+  ok(!requests.filter(r => r.p === '/chat/completions').pop().body.messages.some(x => x.content.includes('SOURCES')), 'search request sends the question and answer excerpt, not the sources');
+  ok(!(await page.evaluate(() => window.thistleNotebook.messages.filter(m => m.role === 'searches').length === 0)), 'suggestions saved in the notebook');
 
   // ELM refuses an optional parameter (reason hidden) → retried once without optional parameters
   rejectReasoning = true;

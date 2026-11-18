@@ -11,6 +11,10 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   (`connect-src 'self' https://elm.edina.ac.uk`) enforces it; never widen `connect-src`, never add analytics, fonts,
   or fetches to third parties (no PubMed/arXiv/URL import from the browser). cdnjs scripts carry SRI hashes; update the
   hash when changing a version.
+- The one exception is **🔎 Suggest searches** (`js/search.js`): ELM writes database queries and the app shows them as
+  plain links (PubMed, Europe PMC, Google Scholar, bioRxiv) that the user opens in a new tab (`noreferrer`). Only
+  search words leave, only on the user's click, and the prompt forbids personal or confidential terms. Never fetch
+  these sites or add them to `connect-src`; never put source text or notebook data in a link.
 - On-campus-only notebooks (`nb.onCampusOnly`) must never use a non-local model (`classify(id).local` = id contains "/")
   for chat, embeddings, vision or transcription, and must disable web search. `allowed()` in `js/app.js` gates this.
 - The AI never computes statistics. Analyses are ```` ```thistle-plot ```` JSON specs (protocol in `js/prompts.js`

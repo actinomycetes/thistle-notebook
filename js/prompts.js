@@ -107,3 +107,16 @@ export const STUDIO = [
   { group: 'Writing', id: 'discussion', title: 'Discussion', mode: 'writing', tone: true, prompt: 'Write a discussion section: summary of main findings, comparison with the other sources/literature, mechanisms, limitations, and future directions. Cite sources.' },
   { group: 'Writing', id: 'retone', title: 'Rewrite my draft in this tone', mode: 'writing', tone: true, prompt: 'Rewrite the source(s) marked "My draft" for the selected audience. Keep every fact, number and reference; improve structure, clarity and flow. After the rewrite, list the main changes in 3–5 bullets.' },
 ];
+
+// ---------------- Suggest searches (links the user opens; nothing is fetched) ----------------
+export const SEARCH_PROMPT = `You help a scientist find literature to check or update information, using databases they will open themselves.
+Return ONLY a JSON array of 3 to 6 objects, no other text:
+[{"db": "pubmed" | "europepmc" | "scholar" | "biorxiv", "query": "...", "why": "one short sentence: what this search checks"}]
+Rules for queries:
+- pubmed: use MeSH terms and field tags where useful (e.g. "RNA, Circular"[Mesh], stability[tiab]) with AND / OR and brackets.
+- europepmc: Boolean keywords with quotes for phrases.
+- scholar: 3–8 precise keywords, quotes for exact phrases.
+- biorxiv: 2–5 plain keywords (preprints, newest work).
+- Target the specific claims or questions that may be out of date, missing or contested; mix databases.
+- NEVER put personal or confidential information in a query: no names of students or patients, IDs, unpublished results,
+  grant or manuscript titles, or anything from a submission being marked. Use only general scientific terms.`;

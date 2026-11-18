@@ -5,7 +5,8 @@ import { ELM, DEFAULT_BASE, classify } from './elm.js';
 import * as db from './store.js';
 import { parseFile, ROLES, guessRole, ACCEPT, splitLines, profileTable } from './ingest.js';
 import { chunkSegments, buildContext } from './retrieval.js';
-import { MODES, TONES, STUDIO, TP_TESTS, systemPrompt } from './prompts.js';
+import { MODES, TONES, STUDIO, TP_TESTS, systemPrompt, SEARCH_PROMPT } from './prompts.js';
+import { SEARCH_DBS, parseSuggestions, recentSince } from './search.js';
 import { renderMarkdown, markdownToDocx } from './md.js';
 import { extractTables, tableToCsv, tableToTsv, tablesToXlsx, reportHtml, markdownToHtml } from './export.js';
 import { parseSpecs, findTable, buildG, tplotFile, ThistlePlot, ThistleFlow, defaultSuiteUrl } from './thistle.js';
@@ -265,6 +266,7 @@ function renderChat() {
 function messageEl(m) {
   const wrap = h('div', { class: 'msg ' + m.role, 'data-id': m.id });
   if (m.role === 'user') { wrap.append(h('div', { class: 'who' }, 'You'), h('div', { class: 'bubble' }, m.content)); return wrap; }
+  if (m.role === 'searches') return searchesEl(m, wrap);
   if (m.role === 'results') {
     wrap.append(h('div', { class: 'who' }, '🔬 Thistle Plot results sent to the model'),
       h('div', { class: 'bubble' }, h('details', {}, h('summary', {}, `${m.meta.count || ''} result(s) — show what was sent`), h('pre', { style: { whiteSpace: 'pre-wrap', fontSize: '11px' } }, m.content))));
@@ -279,7 +281,8 @@ function messageEl(m) {
     h('ol', {}, meta.web.citations.map(c => h('li', {}, h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.title))))));
   const doc = { title: firstLine(m.content), content: m.content, cites: meta.cites || {}, web: meta.web };
   bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)), tableTools: tableTools(doc) }));
-  if (meta.webNote && !meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, `🌐 No web search for this answer: ${meta.webNote}. It is based on your sources and the model's own knowledge, which may be out of date.`));
+  if (meta.webNote && !meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, `🌐 No web search for this answer: ${meta.webNote}. It is based on your sources and the model's own knowledge, which may be out of date. `,
+    h('button', { class: 'btn small', onclick: () => suggestSearches(m) }, '🔎 Suggest searches I can run')));
   if (meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, '🌐 Web search did not run, so this answer uses only your sources and the model\'s own knowledge. ', h('details', {}, h('summary', {}, 'Why'), meta.webError)));
   if (meta.error) bubble.append(h('div', { class: 'err-box' }, meta.error));
   wrap.append(who, bubble, h('div', { class: 'msg-actions' },
@@ -308,7 +311,7 @@ async function prepare(query, sources, budgetOverride) {
   return buildContext({ sources, chunksBySrc, query, budgetTokens: budget, maxChunks: +S.settings.retrievalChunks, embedQuery });
 }
 function historyFor(upto) {
-  const msgs = S.messages.slice(0, upto).slice(-12);
+  const msgs = S.messages.slice(0, upto).filter(m => m.role !== 'searches').slice(-12);
   return msgs.map(m => ({ role: m.role === 'assistant' ? 'assistant' : 'user', content: (m.role === 'results' ? '[Thistle Plot results]\n' : '') + m.content.slice(0, 8000) }));
 }
 
@@ -374,15 +377,66 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
     if (thinking && !a.content.includes('<think>')) a.meta.thinking = thinking.slice(0, 20000);
   } catch (e) {
     if (e.name === 'AbortError') a.meta.error = 'Stopped.'; else { a.meta.error = e.message; console.error(e); }
-  } finally { setBusy(false); S.abort = null; }
-  S.messages.push(a); await db.put('messages', a); await db.touch(S.nb);
-  el.replaceWith(messageEl(a));
+  } finally { S.abort = null; }
+  // Save and show the answer before accepting the next request (no gap where a new message could jump ahead)
+  try { S.messages.push(a); await db.put('messages', a); await db.touch(S.nb); el.replaceWith(messageEl(a)); }
+  finally { setBusy(false); }
   refreshCosts();
   // Analyses requested by the model → run in Thistle Plot, then hand results back (bounded rounds)
   const specs = parseSpecs(a.content).filter(s => s.ok);
   if (specs.length && $('#autoRunToggle').checked && depth < +S.settings.autoRunRounds && !a.meta.error) await runAllAndInterpret(a, depth);
 }
 const WANTS_WEB = /\b(web[ -]?search|search (the )?(web|internet|online)|google|look (it )?up online|(latest|recent|new) (papers?|publications?|literature|studies|research)|up[ -]?to[ -]?date|current literature)\b/i;
+// ---------------- Suggest searches ----------------
+// ELM writes database queries; the app shows them as links. No request goes to those sites unless the user clicks.
+async function suggestSearches(forMsg = null) {
+  if (S.busy) return toast('Wait for the current answer to finish', true);
+  if (!S.settings.apiKey) return settingsDialog();
+  const model = currentModel();
+  if (!allowed(model)) return toast('This notebook is on-campus only: choose a 🏛 model', true);
+  const idx = forMsg ? S.messages.indexOf(forMsg) : S.messages.length;
+  const typed = forMsg ? '' : $('#prompt').value.trim();
+  const lastUser = [...S.messages.slice(0, idx)].reverse().find(m => m.role === 'user');
+  const lastAns = forMsg || [...S.messages.slice(0, idx)].reverse().find(m => m.role === 'assistant' && !m.meta?.error);
+  const question = typed || lastUser?.content || '';
+  if (!question) return toast('Type a question first (or ask one in the chat)', true);
+  const titles = enabledSources().map(s => s.name).slice(0, 40).join('; ');
+  const user = `Question: ${question}\n\n` + (lastAns && !typed ? `Current answer to check or update (excerpt):\n${lastAns.content.replace(/```thistle-plot[\s\S]*?```/g, '').slice(0, 3000)}\n\n` : '') +
+    (titles ? `The user already has these sources: ${titles}\n` : '') + `Year now: ${new Date().getFullYear()}.`;
+  setBusy(true);
+  const note = h('div', { class: 'msg searches' }, h('div', { class: 'who' }, `🔎 ${model} · writing searches…`));
+  $('#chatLog').append(note); note.scrollIntoView({ block: 'end' });
+  try {
+    S.abort = new AbortController();
+    const text = await S.elm.chat(model, [{ role: 'system', content: SEARCH_PROMPT }, { role: 'user', content: user }], { maxTokens: 1500, temperature: 0.2, signal: S.abort.signal });
+    const items = parseSuggestions(text);
+    const m = { id: uid(), nb: S.nb.id, role: 'searches', content: items.map(i => `${SEARCH_DBS[i.db].label}: ${i.query}`).join('\n'), t: Date.now(), meta: { items, model, question: question.slice(0, 300) } };
+    S.messages.push(m); await db.put('messages', m);
+    const shown = messageEl(m); note.replaceWith(shown); shown.scrollIntoView({ block: 'start' });
+    if (typed) $('#prompt').value = '';
+  } catch (e) { note.remove(); toast(e.message, true, 6000); }
+  finally { setBusy(false); S.abort = null; refreshCosts(); }
+}
+function searchesEl(m, wrap) {
+  const since = recentSince(), items = m.meta?.items || [];
+  wrap.append(h('div', { class: 'who' }, `🔎 Suggested searches · ${m.meta?.model || ''}`),
+    h('div', { class: 'bubble' },
+      h('div', { class: 'hint' }, `For: “${(m.meta?.question || '').slice(0, 160)}”`),
+      h('ul', { class: 'search-list' }, items.map(i => {
+        const dbx = SEARCH_DBS[i.db];
+        return h('li', {}, h('b', {}, dbx.label), ' ', h('code', {}, i.query), i.why ? h('div', { class: 'hint' }, i.why) : null,
+          h('div', { class: 'search-links' },
+            h('a', { class: 'btn small', href: dbx.url(i.query), target: '_blank', rel: 'noopener noreferrer' }, `Open in ${dbx.label} ↗`),
+            i.db !== 'biorxiv' ? h('a', { class: 'btn small', href: dbx.url(i.query, since), target: '_blank', rel: 'noopener noreferrer' }, `Since ${since} ↗`) : null,
+            h('button', { class: 'btn small', onclick: () => navigator.clipboard.writeText(i.query).then(() => toast('Search copied')) }, '📋 Copy')));
+      })),
+      h('div', { class: onCampus() ? 'warn-box' : 'hint-box' },
+        (onCampus() ? 'Check the search words contain nothing confidential before opening them. ' : '') +
+        'Thistle Notebook does not contact these sites: a link sends only its search words, and only when you click it. ' +
+        'Download the papers you want and add them with ＋ Add sources, then ask again.')));
+  return wrap;
+}
+
 function setBusy(b) { S.busy = b; $('#btnSend').disabled = b; $('#btnStop').disabled = !b; }
 
 // ---------------- Thistle Plot analysis cards ----------------
@@ -725,8 +779,8 @@ async function testWebSearch(box) {
     h('table', { class: 'diag' }, h('tr', {}, h('th', {}, 'Route'), h('th', {}, 'Model'), h('th', {}, 'Result')),
       rows.map(r => h('tr', {}, h('td', {}, r.name), h('td', {}, r.model), h('td', {}, r.msg)))),
     ok ? null : h('div', {}, rows.some(r => /refused this request/.test(r.msg))
-      ? h('div', {}, '“ELM refused this request” means ELM answered with an error that browsers are not allowed to read (ELM\'s error replies have no CORS header). To see ELM\'s actual reason, run this in Terminal on your own computer. It asks for your key without showing it; the key stays on your computer:',
-        h('pre', { class: 'cmd' }, `read -s -p "ELM key: " ELM_API_KEY; echo
+      ? h('div', {}, '“ELM refused this request” means ELM answered with an error that browsers are not allowed to read (ELM\'s error replies have no CORS header). To see ELM\'s actual reason, run this in Terminal on your own computer. It works in Terminal on a Mac (zsh) and in bash, asks for your key without showing it, and the key stays on your computer:',
+        h('pre', { class: 'cmd' }, `printf 'ELM key: '; read -rs ELM_API_KEY; echo
 curl -s https://elm.edina.ac.uk/api/v1/responses -H "Authorization: Bearer $ELM_API_KEY" -H "Content-Type: application/json" -d '{"model":"${rows[0]?.model || 'gpt-4.1-mini'}","input":"test","tools":[{"type":"web_search_preview"}]}'; echo`),
         h('button', { class: 'btn small', onclick: e => navigator.clipboard.writeText(e.target.previousSibling.textContent).then(() => toast('Command copied')) }, '📋 Copy command'))
       : null,
@@ -742,6 +796,7 @@ function helpDialog() {
 - For each question, only the needed text is sent to ELM. 🏛 models run in University data centres; ☁ models are OpenAI under ELM's zero-data-retention terms.
 - **On-campus only** notebooks (✎ Notebook) never use ☁ models or web search — use this for student work, personal or unpublished data.
 - **🌐 Web search** only works if ELM allows it for your key (so far ELM has refused it). **⚙ Settings → 🌐 Test web search** checks this; if it is unavailable, the option is switched off and answers say so. Everything else works without it.
+- **🔎 Suggest searches**: ELM writes PubMed / Europe PMC / Google Scholar / bioRxiv searches for your question, shown as links. The app does not contact those sites; a link sends only its search words when you click it. Add the papers you choose as sources.
 - **"ELM refused this request"**: ELM answered with an error that browsers cannot read (its error replies lack a CORS header). Usually a model, tool or option is not available to API keys; the web-search test shows a Terminal command that reveals the reason.
 - The page's security policy makes the browser block every connection except to ELM, so nothing can be sent elsewhere.
 
@@ -815,6 +870,7 @@ async function init() {
   $('#btnSend').onclick = () => { const t = $('#prompt').value.trim(); if (!t) return; $('#prompt').value = ''; send(t); };
   $('#prompt').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#btnSend').click(); } };
   $('#btnStop').onclick = () => S.abort?.abort();
+  $('#btnSuggest').onclick = () => suggestSearches();
   $('#btnClearChat').onclick = async () => { if (!confirm('Delete this notebook\'s chat history? (Sources and notes stay.)')) return; await db.delWhere('messages', 'nb', S.nb.id); S.messages = []; renderChat(); };
   $('#btnNewNote').onclick = () => { const n = { id: uid(), nb: S.nb.id, title: 'New note', content: '', t: Date.now(), meta: {} }; S.notes.unshift(n); db.put('notes', n); renderNotes(); viewNote(n); };
   $('#btnThistle').onclick = () => openDrawer('tp');
