@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.2.2). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.2.3). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -69,13 +69,20 @@ The app's **❓ Help** links to all of these:
   ELM spend is shown in the header.
 
 ## Web search and ELM
-ELM's API description lists OpenAI's web-search features, but ELM's own help does not mention web search, and whether
-its proxy allows it may depend on ELM's configuration. **⚙ Settings → 🌐 Test web search** tries each possible route
-with your key (Responses API `web_search_preview` / `web_search` tool; chat completions with a `*-search-preview` model)
-and shows ELM's reply for each. A search only counts if ELM's reply proves a web search happened. If ELM silently ignored
-the tool, the model would answer from memory and the answer would look like search results without being one. If no route
-works, the 🌐 option is switched off with the reason. An answer whose search failed says so at the top.
-Everything else (sources, Studio, Thistle Plot) works without web search. Web search never runs in on-campus-only notebooks.
+**Status (Nov 2026): ELM refused web search for our API key on every route.** ELM's API description lists OpenAI's
+web-search features, but ELM's own help does not mention web search. Everything else (sources, Studio, Thistle Plot,
+exports) works without it.
+
+- **⚙ Settings → 🌐 Test web search** tries each route with your key: the Responses API `web_search_preview` and
+  `web_search` tools, and chat completions with `*-search-preview` models. It shows the outcome of each.
+- **ELM's error replies have no CORS header**, so browsers cannot read them and report them as network failures. The app
+  shows these as "ELM refused this request". The test offers a Terminal command that shows ELM's actual reason. It reads
+  the key without displaying it, and the key stays on your computer.
+- **A search only counts if ELM's reply proves a web search happened.** If no route works, the 🌐 option is switched
+  off with the reason.
+- **If a question asks for a web search but none ran,** the answer says why. The model is told so too, and suggests
+  specific searches (database + query) you can run yourself.
+- **Web search never runs in on-campus-only notebooks.**
 
 ## Thistle suite integration
 - **Statistics run in Thistle Plot.** When a test is needed, the assistant writes a small analysis request: the test
@@ -116,9 +123,11 @@ exports (file structure checked),
 `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.2.2
+## Known limitations of v0.2.3
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
-  check first: embeddings with the on-campus model and reasoning output from Qwen. Web search depends on ELM (⚙ Test web search).
+  check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
+- ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional
+  settings (thinking level, flex, length limit); otherwise it shows "ELM refused this request".
 - Notebooks live in one browser profile; clearing site data deletes them, so save `.tnote` files for anything important.
 - One request may not exceed ELM's 10 MiB limit; very large source sets are searched rather than sent whole.
 - Scanned PDFs: the first 60 scanned pages are read. Excel dates appear as serial numbers. No web-page import (by design).

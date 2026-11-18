@@ -33,6 +33,10 @@ export function classify(id) {
   return { id, local, kind, vision, reasoning, context, webSearch: !local && kind === 'chat' };
 }
 
+export const REFUSED = 'ELM refused this request. Browsers cannot show ELM\'s reason (its error replies lack the CORS header browsers need); ' +
+  'usually the model, tool or option is not available to API keys. ⚙ Settings → Test web search shows a Terminal command that reveals the reason.';
+const clean = p => { const { _stripped, ...rest } = p; return rest; };
+
 export class ELMError extends Error {
   constructor(msg, status) { super(msg); this.status = status; }
 }
@@ -53,8 +57,12 @@ export class ELM {
         r = await fetch(this.base + path, { method, headers, signal, body: form || (body !== undefined ? JSON.stringify(body) : undefined) });
       } catch (e) {
         if (e.name === 'AbortError') throw e;
+        // ELM's error replies carry no CORS header, so the browser hides them and fetch() fails as if offline.
+        // If ELM has answered this page before, it is reachable: the request was refused (status -1, reason unreadable).
+        if (this.reachable) throw new ELMError(REFUSED, -1);
         throw new ELMError('Could not reach ELM. Check your connection (University network or VPN if required) and that the API key is valid.', 0);
       }
+      this.reachable = true;
       if (r.status === 429 && attempt < 2) {
         const wait = Math.min(30, +(r.headers.get('Retry-After') || 5));
         await new Promise(res => setTimeout(res, wait * 1000)); continue;
@@ -87,7 +95,8 @@ export class ELM {
   _params(model, messages, { reasoning, maxTokens, temperature, stream } = {}) {
     const inf = this.info(model);
     const p = { model, messages, stream: !!stream };
-    if (maxTokens) p.max_tokens = maxTokens;
+    // OpenAI reasoning models (o-series, GPT-5/6) take max_completion_tokens instead of max_tokens
+    if (maxTokens) p[!inf.local && inf.reasoning.length ? 'max_completion_tokens' : 'max_tokens'] = maxTokens;
     if (reasoning && reasoning !== 'default' && inf.reasoning.length)
       p.reasoning_effort = inf.reasoning.includes(reasoning) ? reasoning : inf.reasoning[inf.reasoning.length - 1];
     if (this.tier && this.tier !== 'auto' && !inf.local) p.service_tier = this.tier;
@@ -99,6 +108,11 @@ export class ELM {
   async _withFallback(p, fn) {
     for (let i = 0; i < 5; i++) {
       try { return await fn(p); } catch (e) {
+        if (e.status === -1) { // refused, reason hidden: retry once without every optional parameter
+          const opt = ['service_tier', 'reasoning_effort', 'temperature', 'max_tokens', 'max_completion_tokens'].filter(k => k in p);
+          if (!opt.length || p._stripped) throw e;
+          opt.forEach(k => delete p[k]); p._stripped = opt; continue;
+        }
         if (e.status !== 400) throw e;
         const m = e.message.toLowerCase();
         if (p.max_tokens && /max_tokens/.test(m)) { p.max_completion_tokens = p.max_tokens; delete p.max_tokens; continue; }
@@ -112,7 +126,7 @@ export class ELM {
   // onDelta({text|thinking|usage}); returns the full text
   async chatStream(model, messages, opts = {}, onDelta = () => { }) {
     const p = this._params(model, messages, { ...opts, stream: true });
-    const r = await this._withFallback(p, p => this.req('/chat/completions', { body: p, signal: opts.signal, raw: true }));
+    const r = await this._withFallback(p, p => this.req('/chat/completions', { body: clean(p), signal: opts.signal, raw: true }));
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '', full = '';
     for (; ;) {
@@ -140,7 +154,7 @@ export class ELM {
 
   async chat(model, messages, opts = {}) {
     const p = this._params(model, messages, opts);
-    const j = await this._withFallback(p, p => this.req('/chat/completions', { body: p, signal: opts.signal }));
+    const j = await this._withFallback(p, p => this.req('/chat/completions', { body: clean(p), signal: opts.signal }));
     return stripThink(j.choices?.[0]?.message?.content || '');
   }
 
@@ -204,7 +218,7 @@ export class ELM {
         attempts.push({ route: r.name, model: r.model, ok: false, error: 'ELM answered, but no web search took place (the search tool appears to be ignored).' });
       } catch (e) {
         attempts.push({ route: r.name, model: r.model, ok: false, status: e.status, error: e.message });
-        if (e.status === 401 || e.status === 429 || e.status === 0) break; // key, quota or network: other routes will fail too
+        if (e.status === 401 || e.status === 429 || e.status === 0) break; // key, quota or offline: other routes will fail too
       }
     }
     const err = new ELMError('Web search is not available through ELM with this key: ' + attempts.map(a => `${a.route} (${a.model}): ${a.error}`).join(' | '), attempts.at(-1)?.status || 0);

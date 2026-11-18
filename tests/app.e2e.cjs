@@ -7,6 +7,10 @@ fs.mkdirSync(OUT, { recursive: true });
 const BASE = process.env.TN_URL || 'http://localhost:8765/thistle-notebook/index.html';
 const log = [], requests = [];
 let webMode = 'ok'; // 'ok' | 'ignored' (proxy drops the tool) | 'refused' (400)
+let rejectReasoning = false; // ELM refuses reasoning_effort for a model
+// Like the real ELM, error replies carry NO CORS header, so the browser cannot read them
+// (fulfilled mocks skip the browser's CORS check, so the refusal is simulated as the failed fetch the browser reports)
+const refuse = (r, msg) => { void msg; return r.abort('failed'); };
 const ok = (c, m) => { log.push((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
 
 const MODELS = ['Qwen/Qwen3.5-397B-A17B-FP8', 'mistralai/Mistral-Small-4-119B-2603', 'Snowflake/snowflake-arctic-embed-l-v2.0', 'gpt-4o-mini', 'gpt-5-mini', 'gpt-4o-mini-search-preview', 'whisper-1', 'text-embedding-3-small'];
@@ -45,10 +49,11 @@ function chatReply(body) {
     if (p === '/costs') return r.fulfill({ json: { usage: 1.2345, limit: 50, currency: 'GBP', asOf: '2026-11-18T10:00:00Z' }, headers: cors });
     if (p === '/embeddings') return r.fulfill({ json: { data: body.input.map((t, i) => ({ index: i, embedding: embed(t) })) }, headers: cors });
     if (p === '/chat/completions' && body.web_search_options) {
-      if (webMode === 'refused') return r.fulfill({ status: 400, json: { error: { message: 'Unrecognized request argument supplied: web_search_options' } }, headers: cors });
+      if (webMode === 'refused') return refuse(r, 'Unrecognized request argument supplied: web_search_options');
       return r.fulfill({ json: { choices: [{ message: { content: 'Search says Y.', annotations: webMode === 'ok' ? [{ type: 'url_citation', url_citation: { url: 'https://www.ed.ac.uk/news/x', title: 'News' } }] : [] } }] }, headers: cors });
     }
-    if (p === '/responses' && webMode === 'refused') return r.fulfill({ status: 400, json: { error: { message: 'Tool type web_search_preview is not supported' } }, headers: cors });
+    if (p === '/responses' && webMode === 'refused') return refuse(r, 'Tool type web_search_preview is not supported');
+    if (p === '/chat/completions' && rejectReasoning && body.reasoning_effort) return refuse(r, 'reasoning_effort not supported');
     if (p === '/responses' && webMode === 'ignored') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'From memory.', annotations: [] }] }] }, headers: cors });
     if (p === '/chat/completions') return r.fulfill({ body: sse(chatReply(body)), headers: { ...cors, 'Content-Type': 'text/event-stream' } });
     if (p === '/responses') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Web says X.', annotations: [{ type: 'url_citation', url: 'https://doi.org/10.1/abc', title: 'A paper' }] }] }] }, headers: cors });
@@ -115,13 +120,33 @@ function chatReply(body) {
   await page.click('#btnSettings'); await page.click('#modalBody button:has-text("Test web search")');
   await page.waitForSelector('#modalBody table.diag');
   const diag = await page.$$eval('#modalBody table.diag tr', trs => trs.map(t => t.textContent));
-  ok(diag.length === 4 && diag.some(t => t.includes('web_search_options') && t.includes('400')) && diag.some(t => t.includes('not supported')), 'test lists every route with ELM\'s reply');
+  ok(diag.length === 4 && diag.slice(1).every(t => t.includes('ELM refused this request')), 'refused routes reported as refused, not "could not reach ELM"');
+  ok((await page.textContent('#modalBody pre.cmd')).includes('read -s -p "ELM key: "'), 'Terminal command to reveal ELM\'s hidden reason, key not embedded');
   await page.screenshot({ path: path.join(OUT, '1b-websearch-test.png') });
   webMode = 'ok';
   await page.click('#modalBody button:has-text("Test web search")');
   await page.waitForFunction(() => document.querySelector('#modalBody .hint-box b')?.textContent.includes('works'));
   ok(await page.$eval('#webToggle', t => !t.disabled), 'web search option back on after a successful test');
   await page.keyboard.press('Escape');
+
+  // asking for a web search in words without the 🌐 box → note in the answer, and the model is told
+  await page.uncheck('#webToggle');
+  const nBefore = await page.$$eval('.msg.assistant', e => e.length);
+  await page.fill('#prompt', 'Do web search to see if the above information is still up-to-date'); await page.click('#btnSend');
+  await page.waitForFunction(n => document.querySelectorAll('.msg.assistant').length === n + 1 && !window.thistleNotebook.busy, nBefore);
+  const webNote = await page.$eval('.msg.assistant:last-child .warn-box', e => e.textContent).catch(() => '');
+  ok(webNote.includes('No web search for this answer') && webNote.includes('box was not ticked'), 'web request in words → note explains why no search ran');
+  ok(requests.filter(r => r.p === '/chat/completions').pop().body.messages[0].content.includes('Web search is NOT available'), 'model told that web search is not available');
+
+  // ELM refuses an optional parameter (reason hidden) → retried once without optional parameters
+  rejectReasoning = true;
+  await page.selectOption('#reasonSelect', 'high');
+  await page.fill('#prompt', 'Summarise again'); await page.click('#btnSend');
+  await page.waitForFunction(n => document.querySelectorAll('.msg.assistant').length === n + 2 && !window.thistleNotebook.busy, nBefore);
+  const lastTwo = requests.filter(r => r.p === '/chat/completions').slice(-2).map(r => r.body);
+  ok(lastTwo[0].reasoning_effort === 'high' && !('reasoning_effort' in lastTwo[1]) && !('_stripped' in lastTwo[1]), 'hidden refusal → retried without optional parameters');
+  ok(!(await page.$eval('.msg.assistant:last-child', e => e.querySelector('.err-box')?.textContent || '')), 'retried answer arrives without an error');
+  rejectReasoning = false; await page.selectOption('#reasonSelect', 'default');
 
   // ANOVA → Thistle Plot (auto-run) → results → interpretation
   await page.fill('#prompt', 'Run an ANOVA on body weight');
@@ -224,7 +249,7 @@ function chatReply(body) {
   await page.click('#btnCloseDrawer');
   await page.screenshot({ path: path.join(OUT, '5-light.png') });
 
-  const realErr = errors.filter(e => !/example\.com|Content Security Policy|Failed to fetch|status of 400/.test(e)); // 400s: deliberate 'refused' web-search mock
+  const realErr = errors.filter(e => !/example\.com|Content Security Policy|Failed to fetch|status of 400|CORS|Access-Control|ERR_FAILED/.test(e)); // deliberate refusals in the mock (no CORS header, like ELM)
   ok(!realErr.length, 'no page errors' + (realErr.length ? ': ' + realErr.join(' | ') : ''));
   console.log(log.join('\n'));
   await browser.close();

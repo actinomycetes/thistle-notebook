@@ -279,6 +279,7 @@ function messageEl(m) {
     h('ol', {}, meta.web.citations.map(c => h('li', {}, h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.title))))));
   const doc = { title: firstLine(m.content), content: m.content, cites: meta.cites || {}, web: meta.web };
   bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)), tableTools: tableTools(doc) }));
+  if (meta.webNote && !meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, `🌐 No web search for this answer: ${meta.webNote}. It is based on your sources and the model's own knowledge, which may be out of date.`));
   if (meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, '🌐 Web search did not run, so this answer uses only your sources and the model\'s own knowledge. ', h('details', {}, h('summary', {}, 'Why'), meta.webError)));
   if (meta.error) bubble.append(h('div', { class: 'err-box' }, meta.error));
   wrap.append(who, bubble, h('div', { class: 'msg-actions' },
@@ -343,9 +344,16 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
         if (e.attempts) setWebStatus('unavailable', e.attempts.map(x => x.error).join(' / ')); // ELM refused every route
       }
     }
+    // The question asks for a web search but none ran: say why, in the answer and to the model
+    if (!web && depth === 0 && WANTS_WEB.test(query)) {
+      a.meta.webNote = onCampus() ? 'this notebook is on-campus only, so web search is off'
+        : a.meta.webError ? 'the search was refused by ELM'
+        : S.settings.webSearchStatus === 'unavailable' ? 'ELM does not allow web search with this API key (⚙ Settings → Test web search)'
+        : 'the 🌐 Web search box was not ticked';
+    }
     const datasets = sources.filter(s => s.tables).map(s => ({ name: s.name, tables: s.tables }));
     const sys = systemPrompt({ mode: mode || $('#modeSelect').value, tone: tone ?? $('#toneSelect').value, hasSources: !!sources.length, ctxMode,
-      webEnabled: !!web, datasets, today: new Date().toDateString() })
+      webEnabled: !!web, webNote: a.meta.webNote || (a.meta.webError ? 'the search was refused by ELM' : ''), datasets, today: new Date().toDateString() })
       + (context ? `\n\n# SOURCES\n${context}` : '')
       + (S.messages[S.messages.length - 1]?.role === 'results' ? `\n\n# NOW\n${RESULT_NUDGE}` : '')
       + (web ? `\n\n# WEB FINDINGS (via ${web.model})\n${web.text}\n\nWeb sources: ${web.citations.map((c, i) => `[W${i + 1}] ${c.title} <${c.url}>`).join('\n')}` : '');
@@ -374,6 +382,7 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
   const specs = parseSpecs(a.content).filter(s => s.ok);
   if (specs.length && $('#autoRunToggle').checked && depth < +S.settings.autoRunRounds && !a.meta.error) await runAllAndInterpret(a, depth);
 }
+const WANTS_WEB = /\b(web[ -]?search|search (the )?(web|internet|online)|google|look (it )?up online|(latest|recent|new) (papers?|publications?|literature|studies|research)|up[ -]?to[ -]?date|current literature)\b/i;
 function setBusy(b) { S.busy = b; $('#btnSend').disabled = b; $('#btnStop').disabled = !b; }
 
 // ---------------- Thistle Plot analysis cards ----------------
@@ -706,7 +715,7 @@ async function testWebSearch(box) {
     try {
       const res = await S.elm._searchRoute(r, q);
       rows.push({ ...r, ok: res.searched, msg: res.searched ? `✅ works — ${res.citations.length} web source(s), e.g. ${res.citations[0]?.url || '—'}` : '⚠ ELM answered, but no web search took place (the search tool seems to be ignored).' });
-    } catch (e) { rows.push({ ...r, ok: false, msg: `❌ ${e.status ? e.status + ': ' : ''}${e.message}` }); }
+    } catch (e) { rows.push({ ...r, ok: false, msg: e.status === -1 ? '❌ ELM refused this request (its reason is hidden from browsers; see below)' : `❌ ${e.status > 0 ? e.status + ': ' : ''}${e.message}` }); }
   }
   const ok = rows.find(r => r.ok);
   setWebStatus(ok ? 'ok' : 'unavailable', ok ? ok.name : rows.map(r => r.msg).join(' / '));
@@ -715,7 +724,13 @@ async function testWebSearch(box) {
     h('b', {}, ok ? `Web search works with your key (${ok.name}, ${ok.model}).` : 'Web search is not available through ELM with your key. The 🌐 Web search option is now switched off; everything else works as before.'),
     h('table', { class: 'diag' }, h('tr', {}, h('th', {}, 'Route'), h('th', {}, 'Model'), h('th', {}, 'Result')),
       rows.map(r => h('tr', {}, h('td', {}, r.name), h('td', {}, r.model), h('td', {}, r.msg)))),
-    ok ? null : h('div', {}, 'If ELM adds web search later, run this test again. To ask whether it is planned: edina@ed.ac.uk.')));
+    ok ? null : h('div', {}, rows.some(r => /refused this request/.test(r.msg))
+      ? h('div', {}, '“ELM refused this request” means ELM answered with an error that browsers are not allowed to read (ELM\'s error replies have no CORS header). To see ELM\'s actual reason, run this in Terminal on your own computer. It asks for your key without showing it; the key stays on your computer:',
+        h('pre', { class: 'cmd' }, `read -s -p "ELM key: " ELM_API_KEY; echo
+curl -s https://elm.edina.ac.uk/api/v1/responses -H "Authorization: Bearer $ELM_API_KEY" -H "Content-Type: application/json" -d '{"model":"${rows[0]?.model || 'gpt-4.1-mini'}","input":"test","tools":[{"type":"web_search_preview"}]}'; echo`),
+        h('button', { class: 'btn small', onclick: e => navigator.clipboard.writeText(e.target.previousSibling.textContent).then(() => toast('Command copied')) }, '📋 Copy command'))
+      : null,
+      h('div', {}, 'If ELM adds web search later, run this test again. To ask whether it is planned: edina@ed.ac.uk.'))));
 }
 
 function helpDialog() {
@@ -726,7 +741,8 @@ function helpDialog() {
 - Files are read **in this browser**. Notebooks are stored in this browser (IndexedDB); **💾 Save** writes a \`.tnote\` file you can keep or share.
 - For each question, only the needed text is sent to ELM. 🏛 models run in University data centres; ☁ models are OpenAI under ELM's zero-data-retention terms.
 - **On-campus only** notebooks (✎ Notebook) never use ☁ models or web search — use this for student work, personal or unpublished data.
-- **🌐 Web search** only works if ELM allows it for your key: **⚙ Settings → 🌐 Test web search** checks this and shows ELM's reply. If it is unavailable, the option is switched off; everything else works without it.
+- **🌐 Web search** only works if ELM allows it for your key (so far ELM has refused it). **⚙ Settings → 🌐 Test web search** checks this; if it is unavailable, the option is switched off and answers say so. Everything else works without it.
+- **"ELM refused this request"**: ELM answered with an error that browsers cannot read (its error replies lack a CORS header). Usually a model, tool or option is not available to API keys; the web-search test shows a Terminal command that reveals the reason.
 - The page's security policy makes the browser block every connection except to ELM, so nothing can be sent elsewhere.
 
 ### Sources

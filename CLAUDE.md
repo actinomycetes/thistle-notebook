@@ -33,7 +33,9 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
 
 ## Architecture map
 - `js/elm.js` ELM client (`classify` model metadata, streaming SSE chat, embeddings, web search over several routes
-  (`webSearchRoutes`; a route only counts if the reply proves a search happened — ELM support is unconfirmed),
+  (`webSearchRoutes`; a route only counts if the reply proves a search happened; ELM refused all routes in Nov 2026).
+  ELM error replies lack CORS headers: fetch() rejects, `req` reports status -1 ("refused") once ELM has answered
+  this page before, and `_withFallback` retries once without optional parameters,
   transcription, `/costs`; drops unsupported optional params and retries).
 - `js/ingest.js` parsers (pdf.js, mammoth, own zip-based pptx/xlsx readers, PapaParse, vision for images/scans, audio)
   and `profileTable` (data summary given to the model). `js/zip.js` unzip/zip (DecompressionStream).
