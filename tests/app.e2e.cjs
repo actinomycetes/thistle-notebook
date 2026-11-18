@@ -1,0 +1,158 @@
+// End-to-end test (serve the folder that contains thistle-notebook/ and thistle-plot/ on :8765 first): mock ELM (route interception at the real ELM URL, so the CSP still applies), real Thistle Plot in the iframe.
+const { chromium } = require('playwright');
+const fs = require('fs'), path = require('path');
+const SP = __dirname, FX = path.join(SP, 'fixtures'), CDN = process.env.CDN_DIR || '', OUT = path.join(SP, '..', 'test-output');
+fs.mkdirSync(OUT, { recursive: true });
+const BASE = process.env.TN_URL || 'http://localhost:8765/thistle-notebook/index.html';
+const log = [], requests = [];
+const ok = (c, m) => { log.push((c ? 'PASS ' : 'FAIL ') + m); if (!c) process.exitCode = 1; };
+
+const MODELS = ['Qwen/Qwen3.5-397B-A17B-FP8', 'mistralai/Mistral-Small-4-119B-2603', 'Snowflake/snowflake-arctic-embed-l-v2.0', 'gpt-4o-mini', 'gpt-5-mini', 'whisper-1', 'text-embedding-3-small'];
+const embed = t => { const v = new Array(16).fill(0); for (const w of t.toLowerCase().split(/\W+/)) if (w) v[[...w].reduce((s, c) => s + c.charCodeAt(0), 0) % 16] += 1; return v; };
+function sse(text) {
+  const parts = text.match(/[\s\S]{1,40}/g) || [''];
+  return parts.map(p => `data: ${JSON.stringify({ choices: [{ delta: { content: p } }] })}\n\n`).join('') + 'data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":20}}\n\ndata: [DONE]\n\n';
+}
+function chatReply(body) {
+  const sys = body.messages[0].content, last = body.messages[body.messages.length - 1].content;
+  if (sys.includes('# NOW')) return 'Interpretation: Thistle Plot reports a one-way ANOVA. DrugA differs from Vehicle; see the post-hoc table. [1]';
+  if (/anova/i.test(last)) return 'I will run a one-way ANOVA in Thistle Plot.\n\n```thistle-plot\n' + JSON.stringify({ title: 'Weight by treatment', test: 'anova', dataset: 'mice.csv', layout: 'long', group: 'Treatment', value: 'Weight_g', control: 'Vehicle', options: { 'Post-hoc correction': 'Tukey', 'Bogus option': 'x' }, why: '3 independent groups' }) + '\n```\n';
+  if (/Mark THIS submission/.test(last)) return '**Suggested overall mark: 62 / 100**\n\n| criterion | mark |\n|---|---|\n| Understanding | 18/30 [1] |\n\nStrengths: clear [2].';
+  return '## Summary\nThe paper reports DrugA increases weight [1, 2]. The rubric has bands [3]. Invalid cite [999].';
+}
+
+(async () => {
+  const browser = await chromium.launch();
+  const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 }, acceptDownloads: true });
+  const page = await ctx.newPage();
+  const errors = [];
+  page.on('pageerror', e => errors.push('pageerror: ' + e.message));
+  page.on('console', m => { if (m.type() === 'error') errors.push('console: ' + m.text()); });
+  if (CDN) await ctx.route('https://cdnjs.cloudflare.com/**', r => { // optional offline copies of the cdnjs libraries
+    const f = path.join(CDN, r.request().url().replace('https://cdnjs.cloudflare.com/ajax/libs/', '').replace(/\//g, '__'));
+    fs.existsSync(f) ? r.fulfill({ body: fs.readFileSync(f), contentType: 'application/javascript', headers: { 'Access-Control-Allow-Origin': '*' } }) : r.continue();
+  });
+  await ctx.route('https://elm.edina.ac.uk/api/v1/**', async r => {
+    const u = new URL(r.request().url()), p = u.pathname.replace('/api/v1', ''), body = r.request().postDataJSON?.() ?? null;
+    requests.push({ p, body, auth: r.request().headers().authorization });
+    const cors = { 'Access-Control-Allow-Origin': 'http://localhost:8765' };
+    if (r.request().method() === 'OPTIONS') return r.fulfill({ status: 200, headers: { ...cors, 'Access-Control-Allow-Headers': 'authorization, content-type', 'Access-Control-Allow-Methods': 'GET,POST' } });
+    if (p === '/models') return r.fulfill({ json: { data: MODELS.map(id => ({ id })) }, headers: cors });
+    if (p === '/costs') return r.fulfill({ json: { usage: 1.2345, limit: 50, currency: 'GBP', asOf: '2026-11-18T10:00:00Z' }, headers: cors });
+    if (p === '/embeddings') return r.fulfill({ json: { data: body.input.map((t, i) => ({ index: i, embedding: embed(t) })) }, headers: cors });
+    if (p === '/chat/completions') return r.fulfill({ body: sse(chatReply(body)), headers: { ...cors, 'Content-Type': 'text/event-stream' } });
+    if (p === '/responses') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Web says X.', annotations: [{ type: 'url_citation', url: 'https://doi.org/10.1/abc', title: 'A paper' }] }] }] }, headers: cors });
+    r.fulfill({ status: 404, json: { error: { message: 'nope' } }, headers: cors });
+  });
+  await page.addInitScript(() => { sessionStorage.setItem('tn.key', 'elm-test-key'); });
+  await page.goto(BASE);
+  await page.waitForFunction(() => document.querySelector('#modelSelect option[value="Qwen/Qwen3.5-397B-A17B-FP8"]'));
+  ok(await page.$eval('#modelSelect', s => s.value) === 'Qwen/Qwen3.5-397B-A17B-FP8', 'default model is on-campus Qwen');
+  ok((await page.textContent('#costBadge')).includes('£1.23'), 'costs shown');
+  ok(requests.every(r => r.auth === 'Bearer elm-test-key'), 'Bearer key sent');
+
+  // CSP: any non-ELM connection is blocked by the browser
+  const blocked = await page.evaluate(() => fetch('https://example.com/x').then(() => false, () => true));
+  ok(blocked, 'CSP blocks connections to other hosts');
+
+  // sources
+  await page.setInputFiles('#fileInput', fs.readdirSync(FX).map(f => path.join(FX, f)));
+  await page.waitForFunction(() => document.querySelectorAll('.src-item').length === 6 && !document.querySelector('.src-item.busy'), null, { timeout: 30000 });
+  const srcs = await page.evaluate(() => window.thistleNotebook.sources.map(s => ({ name: s.name, role: s.role, kind: s.kind, status: s.status, error: s.error, chars: s.chars, emb: s.meta.embModel, tables: !!s.tables })));
+  console.log(srcs);
+  ok(srcs.every(s => s.status === 'ready'), 'all 6 sources parsed');
+  const by = n => srcs.find(s => s.name === n);
+  ok(by('mice.csv').role === 'dataset' && by('mice.csv').tables, 'csv → dataset with table');
+  ok(by('paired.xlsx').tables && by('paired.xlsx').kind === 'dataset', 'xlsx parsed as table');
+  ok(by('rubric.docx').role === 'rubric', 'rubric role guessed');
+  ok(by('essay_student1.txt').role === 'submission', 'submission role guessed');
+  ok(by('paper.pdf').chars > 50, 'pdf text extracted');
+  ok(by('talk.pptx').chars > 10, 'pptx text extracted');
+  ok(by('paper.pdf').emb === 'Snowflake/snowflake-arctic-embed-l-v2.0', 'on-campus embedding model used');
+  const pptText = await page.evaluate(() => window.thistleNotebook.sources.find(s => s.name === 'talk.pptx').segments[0].text);
+  ok(pptText.includes('Speaker notes'), 'pptx speaker notes read');
+  const xlsxSheets = await page.evaluate(() => Object.keys(window.thistleNotebook.sources.find(s => s.name === 'paired.xlsx').tables));
+  ok(xlsxSheets.includes('Paired'), 'xlsx sheet names read');
+
+  // chat with citations + web search
+  await page.check('#webToggle');
+  await page.fill('#prompt', 'Summarise the sources');
+  await page.click('#btnSend');
+  await page.waitForSelector('.msg.assistant .cite', { timeout: 15000 });
+  const chatReq = requests.filter(r => r.p === '/chat/completions').pop();
+  ok(chatReq.body.messages[0].content.includes('SOURCE: "paper.pdf"'), 'source text sent in system prompt (full mode)');
+  ok(chatReq.body.messages[0].content.includes('[W1] A paper'), 'web findings included');
+  ok(chatReq.body.reasoning_effort === undefined, 'no reasoning param by default');
+  ok(await page.$('.cite.missing') !== null, 'invalid citation flagged');
+  await page.click('.msg.assistant .cite:not(.missing)');
+  ok(await page.isVisible('#popover'), 'citation popover opens');
+  await page.screenshot({ path: path.join(OUT, '1-chat.png') });
+  await page.click('#popover button');
+  await page.waitForSelector('.src-view');
+  await page.keyboard.press('Escape');
+  await page.uncheck('#webToggle');
+
+  // ANOVA → Thistle Plot (auto-run) → results → interpretation
+  await page.fill('#prompt', 'Run an ANOVA on body weight');
+  await page.click('#btnSend');
+  await page.waitForFunction(() => [...document.querySelectorAll('.msg.assistant')].some(m => m.textContent.includes('Interpretation:')), null, { timeout: 60000 });
+  const card = await page.evaluate(() => { const c = document.querySelector('.tp-card'); return { status: c.querySelector('.status')?.textContent, result: c.querySelector('.tp-result')?.textContent.slice(0, 400), img: !!c.querySelector('.tp-result img'), warn: c.querySelector('.warn-box')?.textContent }; });
+  console.log(card);
+  ok(card.status === 'run in Thistle Plot', 'analysis ran in Thistle Plot');
+  ok(/ANOVA/i.test(card.result || ''), 'TP ANOVA result shown in card');
+  ok(card.img, 'TP auto-plot captured');
+  ok((card.warn || '').includes('Bogus option'), 'unknown option reported');
+  const resMsg = await page.evaluate(() => window.thistleNotebook.messages.find(m => m.role === 'results')?.content || '');
+  ok(/Post-hoc|Tukey/i.test(resMsg) && /F|p/.test(resMsg), 'results text sent back to the model');
+  const G = await page.evaluate(() => window.thistleNotebook.messages.find(m => m.meta?.tp)?.meta.tp[0].G);
+  ok(G && G.groups[0].name === 'Vehicle' && G.groups.length === 3 && G.groups.every(g => g.data.filter(r => r[0] !== '').length === 8), 'G built deterministically (control first, n=8 each)');
+  const csvVals = fs.readFileSync(path.join(FX, 'mice.csv'), 'utf8').trim().split('\n').slice(1).filter(l => l.includes('Vehicle')).map(l => +l.split(',')[3]);
+  ok(JSON.stringify(G.groups[0].data.map(r => r[0])) === JSON.stringify(csvVals), 'TP table values identical to the CSV');
+  await page.screenshot({ path: path.join(OUT, '2-anova.png') });
+  const [dl] = await Promise.all([page.waitForEvent('download'), page.click('.tp-card button:has-text(".tplot")')]);
+  const tplot = JSON.parse(fs.readFileSync(await dl.path(), 'utf8'));
+  ok(tplot.app === 'Thistle Plot' && tplot.format === 2 && tplot.G.groups.length === 3 && tplot.statTabs.length === 1, '.tplot file has suite header, table and result');
+  fs.writeFileSync(path.join(OUT, 'anova.tplot'), JSON.stringify(tplot));
+
+  // Studio: per-submission marking → note
+  await page.click('#studio button:has-text("Mark each submission")');
+  await page.waitForSelector('#modal:not([hidden]) .md table', { timeout: 20000 });
+  const note = await page.textContent('#modalBody');
+  ok(note.includes('62 / 100') && note.includes('essay_student1.txt'), 'marking note with summary table');
+  const [dl2] = await Promise.all([page.waitForEvent('download'), page.click('#modalBody button:has-text("Word")')]);
+  const docxPath = path.join(OUT, 'note.docx'); fs.copyFileSync(await dl2.path(), docxPath);
+  await page.screenshot({ path: path.join(OUT, '3-note.png') });
+  await page.keyboard.press('Escape');
+
+  // save .tnote and reopen
+  const [dl3] = await Promise.all([page.waitForEvent('download'), page.click('#btnSave')]);
+  const tn = path.join(OUT, 'nb.tnote'); fs.copyFileSync(await dl3.path(), tn);
+  const tnj = JSON.parse(fs.readFileSync(tn, 'utf8'));
+  ok(tnj.app === 'Thistle Notebook' && tnj.format === 1 && tnj.kind === 'notebook' && tnj.sources.length === 6, '.tnote header + content');
+  await page.setInputFiles('#openInput', tn);
+  await page.waitForFunction(() => document.querySelectorAll('#nbSelect option').length === 2);
+  ok(await page.evaluate(() => window.thistleNotebook.sources.length === 6 && window.thistleNotebook.messages.length > 3), '.tnote reopened as a new notebook');
+  // TP project rejected politely
+  await page.setInputFiles('#openInput', path.join(OUT, 'anova.tplot'));
+  await page.waitForTimeout(300);
+  ok((await page.textContent('#toast')).includes('Thistle Plot project'), '.tplot opened as notebook gives a plain message');
+
+  // on-campus only
+  await page.evaluate(async () => { const S = window.thistleNotebook; S.nb.onCampusOnly = true; });
+  await page.click('#btnNbSettings'); await page.click('#modalBody button:has-text("Save")');
+  await page.waitForTimeout(200);
+  ok(await page.$eval('#modelSelect option[value="gpt-4o-mini"]', o => o.disabled), 'OpenAI models disabled in on-campus notebook');
+  ok(await page.$eval('#webToggle', o => o.disabled), 'web search disabled in on-campus notebook');
+
+  // light theme screenshot + TP drawer
+  await page.click('#btnTheme');
+  await page.click('#btnThistle'); await page.waitForTimeout(800);
+  await page.screenshot({ path: path.join(OUT, '4-drawer.png') });
+  await page.click('#btnCloseDrawer');
+  await page.screenshot({ path: path.join(OUT, '5-light.png') });
+
+  const realErr = errors.filter(e => !/example\.com|Content Security Policy|Failed to fetch/.test(e));
+  ok(!realErr.length, 'no page errors' + (realErr.length ? ': ' + realErr.join(' | ') : ''));
+  console.log(log.join('\n'));
+  await browser.close();
+})().catch(e => { console.error(e); console.log(log.join('\n')); process.exit(1); });
