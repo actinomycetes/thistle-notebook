@@ -27,7 +27,7 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   Notebook data lives in IndexedDB (`js/store.js`) and `.tnote` files.
 
 ## Thistle suite conventions (shared)
-- One extension per app: `.tnote` here. A saved JSON starts with `{"app": "Thistle Notebook", "format": 1,
+- One extension per app: `.tnote` here. A saved JSON starts with `{"app": "Thistle Notebook", "format": 2,
   "appVersion", "kind": "notebook"}` (`fileHeader()` in `js/version.js`). Bump `FILE_FORMAT` when the structure changes,
   and keep opening older files.
 - Other Thistle files opened as a notebook get a plain message (`identifyFile` in `js/store.js`); `.tplot` and `.tflow`
@@ -53,7 +53,12 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   (tables need `<w:tblGrid>`; >5 columns → landscape).
 - `js/export.js` `extractTables` (Markdown tables in document order), .xlsx writer (inline strings, numbers as
   numbers, frozen header, Sources sheet), CSV with BOM, TSV/HTML clipboard, standalone HTML report.
-- `js/app.js` controller and UI.
+- `js/app.js` controller and UI. Source tabs: `nb.tabs [{id,name,active}]`, `nb.viewTab`, `source.tabs [ids]`;
+  `ensureTabs()` migrates format-1 notebooks; `enabledSources()` = enabled + ready + in a ticked tab; answers record
+  `meta.tabIds/tabNames/sourceIds/sourceNames`. Originals: `source.file {name,size,lastModified,path,sha256}`, session
+  links in `S.files` (browsers cannot keep paths), `findFilesDialog` matches by name, `changedOnDisk` compares SHA-256.
+  Dirty state: `nb.updated > nb.savedAt` (`saveTnote` sets `savedAt`; imported files count as saved).
+- Format history: 1 = v0.1–0.3; 2 = v0.4 (tabs, file fingerprints). Format-1 files open (tabs created on open).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

@@ -1,6 +1,6 @@
 // Thistle Notebook controller: notebooks, sources, chat, Studio, notes, and the Thistle Plot / Flow bridge.
 import { APP_VERSION, FILE_EXT } from './version.js';
-import { $, $$, h, esc, uid, toast, saveBlob, saveText, safeName, dateStamp, estTokens, sleep, IS_IOS } from './util.js';
+import { $, $$, h, esc, uid, toast, saveBlob, saveText, safeName, dateStamp, estTokens, sleep, IS_IOS, fmtBytes } from './util.js';
 import { ELM, DEFAULT_BASE, classify } from './elm.js';
 import * as db from './store.js';
 import { parseFile, ROLES, guessRole, ACCEPT, splitLines, profileTable } from './ingest.js';
@@ -37,6 +37,9 @@ function saveSettings(s) {
 const S = {
   settings: loadSettings(), elm: null, models: [], modelsError: '', nb: null, sources: [], notes: [], messages: [],
   chunkCache: new Map(), busy: false, abort: null, tp: null, tf: null,
+  files: new Map(),      // source id → original File, for this browser session only (browsers cannot keep paths)
+  tableCache: new Map(), // source id → tables re-read from a linked original (datasets too large to keep)
+  histPos: -1,
 };
 const makeElm = () => (S.elm = new ELM({ apiKey: S.settings.apiKey, baseUrl: S.settings.baseUrl, serviceTier: S.settings.serviceTier }));
 
@@ -133,6 +136,8 @@ async function openNotebook(id) {
   S.chunkCache.clear();
   [S.sources, S.notes, S.messages] = await Promise.all([db.byNb('sources', id), db.byNb('notes', id), db.byNb('messages', id)]);
   S.sources.sort((a, b) => a.created - b.created); S.notes.sort((a, b) => b.t - a.t); S.messages.sort((a, b) => a.t - b.t);
+  S.files.clear(); S.tableCache.clear(); S.histPos = -1;
+  await ensureTabs();
   $('#modeSelect').value = S.nb.mode || 'general'; $('#toneSelect').value = S.nb.tone || 'scientist';
   await renderNbSelect(); renderPrivacy(); renderSources(); renderNotes(); renderChat();
 }
@@ -167,33 +172,100 @@ function notebookDialog() {
 
 // ---------------- sources ----------------
 const KIND_ICON = { pdf: '📄', docx: '📝', pptx: '📊', dataset: '📈', text: '📃', image: '🖼', audio: '🎙', web: '🌐', note: '🗒' };
+// ---------- source tabs: sets of sources in one notebook; only sources in ticked tabs are used ----------
+async function ensureTabs() {
+  const nb = S.nb; let changed = false;
+  if (!Array.isArray(nb.tabs) || !nb.tabs.length) { nb.tabs = [{ id: uid(), name: 'Sources', active: true }]; changed = true; }
+  if (!nb.tabs.some(t => t.id === nb.viewTab)) { nb.viewTab = nb.tabs[0].id; changed = true; }
+  const ids = new Set(nb.tabs.map(t => t.id));
+  for (const src of S.sources) {
+    const keep = (src.tabs || []).filter(id => ids.has(id));
+    if (!keep.length || keep.length !== (src.tabs || []).length) { src.tabs = keep.length ? keep : [nb.tabs[0].id]; await db.put('sources', src); }
+  }
+  if (changed) await db.put('notebooks', nb);
+}
+const tabOf = id => S.nb.tabs.find(t => t.id === id);
+const activeTabIds = () => new Set(S.nb.tabs.filter(t => t.active).map(t => t.id));
+const inActiveTab = src => (src.tabs || []).some(id => activeTabIds().has(id));
+async function saveNb() { await db.touch(S.nb); }
+function renderTabs() {
+  const nav = $('#srcTabs'); nav.innerHTML = '';
+  for (const t of S.nb.tabs) {
+    const n = S.sources.filter(x => (x.tabs || []).includes(t.id)).length;
+    const cb = h('input', { type: 'checkbox', checked: t.active, title: 'Use this tab\'s sources in chat and Studio', onclick: e => e.stopPropagation(),
+      onchange: async e => { t.active = e.target.checked; await saveNb(); renderSources(); } });
+    nav.append(h('div', { class: 'src-tab' + (t.id === S.nb.viewTab ? ' view' : '') + (t.active ? ' active' : ''), title: 'Click to show · double-click to rename · tick to use in chat',
+      onclick: async () => { if (S.nb.viewTab === t.id) return; S.nb.viewTab = t.id; await db.put('notebooks', S.nb); renderSources(); },
+      ondblclick: async () => { const v = prompt('Tab name', t.name); if (v && v.trim()) { t.name = v.trim().slice(0, 40); await saveNb(); renderSources(); } } },
+      cb, h('span', { class: 'tab-name' }, t.name), h('small', {}, String(n)),
+      S.nb.tabs.length > 1 ? h('button', { class: 'icon', title: 'Delete this tab', onclick: e => { e.stopPropagation(); deleteTab(t); } }, '✕') : null));
+  }
+  nav.append(h('button', { class: 'tab-add', title: 'New source tab', onclick: addTab }, '＋'));
+}
+async function addTab() {
+  const name = prompt('Name of the new source tab', `Set ${S.nb.tabs.length + 1}`);
+  if (!name || !name.trim()) return;
+  const t = { id: uid(), name: name.trim().slice(0, 40), active: true };
+  S.nb.tabs.push(t); S.nb.viewTab = t.id; await saveNb(); renderSources();
+}
+async function deleteTab(t) {
+  const only = S.sources.filter(x => (x.tabs || []).length === 1 && x.tabs[0] === t.id);
+  const rest = S.nb.tabs.filter(x => x.id !== t.id);
+  if (!confirm(`Delete the tab “${t.name}”?` + (only.length ? `\n\nIts ${only.length} source(s) are not in any other tab and will move to “${rest[0].name}”.` : ''))) return;
+  for (const x of S.sources) if ((x.tabs || []).includes(t.id)) { x.tabs = x.tabs.filter(id => id !== t.id); if (!x.tabs.length) x.tabs = [rest[0].id]; await db.put('sources', x); }
+  S.nb.tabs = rest; if (S.nb.viewTab === t.id) S.nb.viewTab = rest[0].id;
+  await saveNb(); renderSources();
+}
+function tabMenu(src, anchor) {
+  const p = $('#popover'); p.innerHTML = '';
+  p.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, `Tabs for “${src.name.slice(0, 40)}”`),
+    ...S.nb.tabs.map(t => h('label', { class: 'check-row menu-item' }, h('input', { type: 'checkbox', checked: (src.tabs || []).includes(t.id), onchange: async e => {
+      const set = new Set(src.tabs || []); e.target.checked ? set.add(t.id) : set.delete(t.id);
+      if (!set.size) { e.target.checked = true; return toast('A source must be in at least one tab', true); }
+      src.tabs = [...set]; await db.put('sources', src); await saveNb(); renderSources();
+    } }), t.name)),
+    h('div', { class: 'hint', style: { padding: '4px 6px' } }, 'A source can be in several tabs (e.g. one rubric for every set of answers).')));
+  p.hidden = false; const r = anchor.getBoundingClientRect();
+  p.style.left = Math.min(r.left, innerWidth - p.offsetWidth - 10) + 'px'; p.style.top = (r.bottom + 4) + 'px';
+}
+
 function renderSources() {
+  renderTabs();
   const ul = $('#srcList'); ul.innerHTML = '';
-  $('#srcCount').textContent = S.sources.length ? `(${S.sources.filter(s => s.enabled).length}/${S.sources.length} selected)` : '';
-  $('#dropHint').style.display = S.sources.length > 3 ? 'none' : '';
-  for (const s of S.sources) {
-    const role = h('select', { title: 'What this source is (guides the assistant, e.g. rubric vs submission)', onchange: async e => { s.role = e.target.value; await db.put('sources', s); } },
+  const view = S.sources.filter(x => (x.tabs || []).includes(S.nb.viewTab)), used = enabledSources().length;
+  $('#srcCount').textContent = S.sources.length ? `(${used} of ${S.sources.length} used in chat)` : '';
+  $('#srcAll').checked = view.length > 0 && view.every(x => x.enabled);
+  $('#dropHint').style.display = view.length > 3 ? 'none' : '';
+  const viewTab = tabOf(S.nb.viewTab);
+  if (viewTab && !viewTab.active && view.length) ul.append(h('li', { class: 'warn-box' }, `This tab is not ticked, so its sources are not used in chat. Tick “${viewTab.name}” above to use them.`));
+  for (const s of view) {
+    const role = h('select', { title: 'What this source is (guides the assistant, e.g. rubric vs submission)', onchange: async e => { s.role = e.target.value; await db.put('sources', s); await saveNb(); } },
       Object.entries(ROLES).map(([k, v]) => h('option', { value: k, selected: s.role === k }, v)));
-    const cb = h('input', { type: 'checkbox', checked: s.enabled, title: 'Include in chat and Studio', onchange: async e => { s.enabled = e.target.checked; await db.put('sources', s); renderSources(); } });
+    const cb = h('input', { type: 'checkbox', checked: s.enabled, title: 'Include in chat and Studio', onchange: async e => { s.enabled = e.target.checked; await db.put('sources', s); await saveNb(); renderSources(); } });
     const tk = Math.ceil((s.chars || 0) / 3.6), tokens = !s.chars ? '' : tk < 1000 ? `${tk} tok` : `~${Math.round(tk / 1000)}k tok`;
-    ul.append(h('li', { class: 'src-item' + (s.status === 'busy' ? ' busy' : s.status === 'error' ? ' err' : '') },
+    const nTabs = (s.tabs || []).length;
+    ul.append(h('li', { class: 'src-item' + (s.status === 'busy' ? ' busy' : s.status === 'error' ? ' err' : ''), 'data-id': s.id },
       cb, h('span', { class: 'name', title: s.name, onclick: () => viewSource(s) }, `${KIND_ICON[s.kind] || '📃'} ${s.name}`),
-      h('button', { class: 'icon', title: 'Remove source', onclick: async () => { if (!confirm(`Remove "${s.name}"?`)) return; await db.deleteSource(s.id); S.sources = S.sources.filter(x => x !== s); S.chunkCache.delete(s.id); renderSources(); } }, '✕'),
+      h('button', { class: 'icon', title: 'Remove source from the notebook', onclick: async () => { if (!confirm(`Remove "${s.name}" from the notebook${nTabs > 1 ? ' (all tabs)' : ''}?`)) return; await db.deleteSource(s.id); S.sources = S.sources.filter(x => x !== s); S.chunkCache.delete(s.id); S.files.delete(s.id); await saveNb(); renderSources(); } }, '✕'),
       h('div', { class: 'sub' }, s.status === 'busy' ? h('span', {}, s.progress || 'Reading…') : s.status === 'error' ? h('span', { title: s.error }, '⚠ ' + s.error) :
         [role, h('span', {}, tokens), s.meta?.embModel ? h('span', { title: `Semantic search: ${s.meta.embModel}` }, '🧭') : null,
-          s.tables ? h('span', { title: 'Table kept for Thistle Plot' }, '📊') : null])));
+          s.tables ? h('span', { title: 'Table kept for Thistle Plot' }, '📊') : null,
+          S.files.has(s.id) ? h('span', { title: `Original file linked: ${S.files.get(s.id).name}` }, '🔗') : null,
+          h('button', { class: 'icon tabs-btn', title: 'Which tabs this source is in', onclick: e => tabMenu(s, e.currentTarget) }, nTabs > 1 ? `📁${nTabs}` : '📁')])));
   }
 }
 async function addFiles(files) {
   if (!S.nb) return;
   for (const file of files) {
     if (file.name.toLowerCase().endsWith('.tnote')) { await openTnote(file); continue; }
-    const s = { id: uid(), nb: S.nb.id, name: file.name, kind: 'text', role: 'reference', enabled: true, created: Date.now(), status: 'busy', chars: 0, meta: {} };
-    S.sources.push(s); renderSources();
+    const s = { id: uid(), nb: S.nb.id, name: file.name, kind: 'text', role: 'reference', enabled: true, created: Date.now(), status: 'busy', chars: 0, meta: {},
+      tabs: [S.nb.viewTab], file: fileInfo(file) };
+    S.sources.push(s); S.files.set(s.id, file); renderSources();
     try {
       const ctx = { elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(),
         log: m => { s.progress = m; renderSources(); } };
       if (/\.(mp3|m4a|wav|webm|mp4|mpeg|mpga|ogg|flac)$/i.test(file.name) && onCampus() && !transcriptionModel()) throw new Error('No on-campus transcription model on ELM; this notebook is on-campus only.');
+      s.file.sha256 = await fileHash(file);
       const r = await parseFile(file, ctx);
       await finishSource(s, r);
     } catch (e) {
@@ -216,8 +288,14 @@ async function finishSource(s, r) {
   await db.putMany('chunks', chunks); S.chunkCache.set(s.id, chunks);
   s.status = 'ready'; delete s.progress; await db.put('sources', s); await db.touch(S.nb); renderSources();
 }
+const fileInfo = f => ({ name: f.name, size: f.size, lastModified: f.lastModified, path: f.webkitRelativePath || '' });
+// Content fingerprint, so a moved or copied file (new date, same bytes) is not mistaken for an edited one
+async function fileHash(f) {
+  try { const d = await crypto.subtle.digest('SHA-256', await f.arrayBuffer()); return [...new Uint8Array(d)].map(b => b.toString(16).padStart(2, '0')).join(''); }
+  catch { return null; }
+}
 async function addTextSource(name, text, kind = 'text', role = 'reference', extra = {}) {
-  const s = { id: uid(), nb: S.nb.id, name, kind, role, enabled: true, created: Date.now(), status: 'busy', chars: 0, meta: {} };
+  const s = { id: uid(), nb: S.nb.id, name, kind, role, enabled: true, created: Date.now(), status: 'busy', chars: 0, meta: {}, tabs: [S.nb.viewTab], noFile: true };
   S.sources.push(s); renderSources();
   await finishSource(s, { kind, role, segments: splitLines(text), ...extra });
   return s;
@@ -243,8 +321,134 @@ function viewSource(s, highlight) {
     else div.append(txt);
     body.append(div);
   });
+  const f = S.files.get(s.id), tools = h('div', { class: 'tp-btns', style: { marginBottom: '8px' } });
+  if (f) tools.append(h('button', { class: 'btn small', title: 'Open the original file in a new tab (PDFs open in the browser)', onclick: () => openOriginal(s) }, '📄 Open original'),
+    h('button', { class: 'btn small', title: 'Read the file again (e.g. after you edited it) and rebuild the search index', onclick: () => { closeModal(); rereadSource(s); } }, '↻ Re-read from file'));
+  else if (!s.noFile) tools.append(h('span', { class: 'hint' }, 'Original file not linked in this session. '),
+    h('button', { class: 'btn small', onclick: async () => { const [file] = await pickFiles({}); if (file) { await linkFile(s, file); closeModal(); viewSource(s, highlight); } } }, '📂 Locate original…'));
+  if (s.file) tools.append(h('span', { class: 'hint' }, ` ${s.file.path || s.file.name} · ${fmtBytes(s.file.size)} · ${new Date(s.file.lastModified).toLocaleDateString()}`));
+  body.prepend(tools);
   modal(`${KIND_ICON[s.kind] || ''} ${s.name}`, body);
   setTimeout(() => body.querySelector('mark')?.scrollIntoView({ block: 'center' }), 60);
+}
+
+// ---------- original files (moved/renamed on disk) ----------
+// Browsers cannot keep file paths or reopen files by themselves, so (as in Thistle Flow) the user points to the folder
+// or the files; matching names are linked for this session. The notebook keeps the extracted text, so chat works without
+// originals; they are needed to open the original, re-read a changed file, or analyse tables too large to keep.
+function pickFiles({ folder = false, multiple = false, accept = '' } = {}) {
+  return new Promise(res => {
+    const inp = h('input', { type: 'file', class: 'file-input' });
+    if (folder) inp.webkitdirectory = true; if (multiple || folder) inp.multiple = true; if (accept && !IS_IOS) inp.accept = accept;
+    inp.onchange = () => { res([...inp.files]); inp.remove(); };
+    inp.oncancel = () => { res([]); inp.remove(); };
+    document.body.append(inp); inp.click();
+  });
+}
+const fileSources = () => S.sources.filter(s => !s.noFile && s.kind !== 'note');
+// Changed = different content (fingerprint); sources added before v0.4.0 have none, so size and date are compared
+const changedOnDisk = (s, f) => !!(s.file && f && (s.file.sha256 && f._sha256 ? f._sha256 !== s.file.sha256 : (f.size !== s.file.size || f.lastModified !== s.file.lastModified)));
+async function linkFile(s, file) {
+  if (s.file?.sha256 && file._sha256 === undefined) file._sha256 = file.size === s.file.size ? await fileHash(file) : 'size-differs';
+  S.files.set(s.id, file);
+  if (s.kind === 'dataset' && !s.tables && !S.tableCache.has(s.id)) {
+    try { const r = await parseFile(file, parseCtx(s)); if (r.tables) S.tableCache.set(s.id, r.tables); } catch (e) { toast(`Could not read the table in ${file.name}: ${e.message}`, true); }
+  }
+  renderSources();
+}
+const parseCtx = s => ({ elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(), log: m => { s.progress = m; renderSources(); } });
+async function rereadSource(s) {
+  const file = S.files.get(s.id); if (!file) return toast('Link the original file first (📂 Find files)', true);
+  const keep = { role: s.role };
+  await db.delWhere('chunks', 'src', s.id); S.chunkCache.delete(s.id); S.tableCache.delete(s.id);
+  s.status = 'busy'; renderSources();
+  try { const r = await parseFile(file, parseCtx(s)); s.file = { ...fileInfo(file), sha256: await fileHash(file) }; delete s.error; await finishSource(s, { ...r, role: keep.role }); toast(`Re-read “${s.name}”`); }
+  catch (e) { s.status = 'error'; s.error = e.message; renderSources(); }
+}
+function openOriginal(s) {
+  const f = S.files.get(s.id); if (!f) return;
+  const url = URL.createObjectURL(f); window.open(url, '_blank', 'noopener'); setTimeout(() => URL.revokeObjectURL(url), 120000);
+}
+function findFilesDialog() {
+  const body = h('div');
+  const match = async files => {
+    const list = fileSources(); let n = 0;
+    for (const s of list) {
+      if (S.files.has(s.id)) continue;
+      const want = (s.file?.name || s.name).toLowerCase();
+      const cands = files.filter(f => f.name.toLowerCase() === want);
+      const f = cands.find(c => s.file && c.size === s.file.size) || cands.find(c => s.file?.path && c.webkitRelativePath.endsWith(s.file.path.split('/').slice(1).join('/'))) || cands[0];
+      if (f) { n++; await linkFile(s, f); }
+    }
+    return n;
+  };
+  const draw = () => {
+    const list = fileSources(), missing = list.filter(s => !S.files.has(s.id));
+    body.replaceChildren(
+      h('div', { class: 'hint-box' }, 'The notebook keeps the text of every source, so chat works without the original files. Link them again after moving or renaming them to ',
+        h('b', {}, 'open the original'), ', ', h('b', {}, 're-read a file you changed'), ', or analyse ', h('b', {}, 'tables too large to keep'), '. ',
+        'Browsers cannot find files on their own: ', h('b', {}, 'choose the folder'), ' (every file with a matching name is linked) or the files; a renamed file can be assigned with ', h('b', {}, 'Choose…'), '. Links last until the page is closed.'),
+      list.length ? h('table', { class: 'diag' }, h('tr', {}, h('th', {}, 'Source'), h('th', {}, 'Expected file'), h('th', {}, 'Status'), h('th', {})),
+        list.map(s => { const f = S.files.get(s.id), ch = changedOnDisk(s, f);
+          return h('tr', {}, h('td', {}, s.name), h('td', { class: 'hint' }, s.file ? `${s.file.path || s.file.name} · ${fmtBytes(s.file.size)} · ${new Date(s.file.lastModified).toLocaleDateString()}` : s.name),
+            h('td', {}, f ? (ch ? '⚠ linked — the file has changed since it was added' : `🔗 linked${f.name !== (s.file?.name || s.name) ? ` (${f.name})` : ''}`) : 'not linked'),
+            h('td', {}, f && ch ? h('button', { class: 'btn small primary', onclick: async () => { await rereadSource(s); draw(); } }, '↻ Re-read') : null,
+              h('button', { class: 'btn small', onclick: async () => { const [x] = await pickFiles({}); if (x) { await linkFile(s, x); draw(); } } }, 'Choose…'))); })) : h('p', {}, 'This notebook has no file-based sources.'),
+      h('div', { class: 'modal-foot' },
+        IS_IOS ? null : h('button', { class: 'btn primary', onclick: async () => { const fs = await pickFiles({ folder: true }); const n = await match(fs); toast(n ? `Linked ${n} file(s)` : `None of the ${fs.length} file(s) in that folder has a matching name`, !n); draw(); } }, '📂 Choose folder…'),
+        h('button', { class: 'btn', onclick: async () => { const fs = await pickFiles({ multiple: true }); const n = await match(fs); toast(n ? `Linked ${n} file(s)` : 'No matching file names', !n); draw(); } }, 'Choose files…'),
+        h('button', { class: 'btn', onclick: closeModal }, missing.length ? 'Later' : 'Done')));
+  };
+  draw();
+  modal(`Find the original files for “${S.nb.name}”`, body);
+}
+
+// ---------- closing a notebook ----------
+async function closeNotebook() {
+  if (S.busy) return toast('Wait for the current answer to finish', true);
+  const nb = S.nb, empty = !S.sources.length && !S.messages.length && !S.notes.length;
+  const dirty = (nb.updated || 0) > (nb.savedAt || 0);
+  const finish = async () => {
+    closeModal(); await db.deleteNotebook(nb.id);
+    let list = await db.listNotebooks(); if (!list.length) list = [await db.createNotebook('Untitled notebook')];
+    await openNotebook(list[0].id); toast(`Closed “${nb.name}”`);
+  };
+  if (empty) { if (confirm(`Close the empty notebook “${nb.name}”?`)) await finish(); return; }
+  modal('Close notebook', h('div', {},
+    h('p', {}, dirty ? h('b', {}, `“${nb.name}” has changes that are not saved in a .tnote file.`) : `“${nb.name}” has not changed since it was saved (${new Date(nb.savedAt).toLocaleString()}).`),
+    h('p', { class: 'hint' }, 'Closing removes the notebook (sources\' text, chat and notes) from this browser. A saved .tnote file can be opened again with 📂 Open. Your original files on disk are not touched.'),
+    h('div', { class: 'modal-foot' },
+      h('button', { class: 'btn', onclick: closeModal }, 'Cancel'), h('span', { class: 'grow' }),
+      h('button', { class: 'btn danger', onclick: finish }, dirty ? 'Close without saving' : 'Close'),
+      dirty ? h('button', { class: 'btn primary', onclick: async () => { await saveTnote(); await finish(); } }, '💾 Save and close') : null)));
+}
+
+// ---------- resizable panes (as in Thistle Plot / Thistle Flow) ----------
+function setupSplitters() {
+  const L = $('#paneSources'), R = $('#paneStudio');
+  let w = {}; try { w = JSON.parse(localStorage.getItem('tn.paneW') || '{}'); } catch { }
+  if (w.l) L.style.width = w.l + 'px'; if (w.r) R.style.width = w.r + 'px';
+  const save = () => { try { localStorage.setItem('tn.paneW', JSON.stringify({ l: L.style.width ? L.offsetWidth : null, r: R.style.width ? R.offsetWidth : null })); } catch { } };
+  const drag = (el, onMove) => el.addEventListener('pointerdown', e => {
+    if (e.button !== 0) return; e.preventDefault(); el.setPointerCapture(e.pointerId); document.body.classList.add('resizing');
+    const move = ev => onMove(ev), up = () => { el.removeEventListener('pointermove', move); el.removeEventListener('pointerup', up); el.removeEventListener('pointercancel', up); document.body.classList.remove('resizing'); save(); };
+    el.addEventListener('pointermove', move); el.addEventListener('pointerup', up); el.addEventListener('pointercancel', up);
+  });
+  const clamp = v => Math.max(180, Math.min(window.innerWidth * 0.45, v));
+  drag($('#splitL'), e => { L.style.width = clamp(e.clientX - L.getBoundingClientRect().left) + 'px'; });
+  drag($('#splitR'), e => { R.style.width = clamp(R.getBoundingClientRect().right - e.clientX) + 'px'; });
+  const reset = pane => () => { pane.style.width = ''; save(); };
+  [[$('#splitL'), reset(L)], [$('#splitR'), reset(R)]].forEach(([el, fn]) => { el.addEventListener('dblclick', fn); onDoubleTap(el, fn); });
+}
+// Double-tap for touch and pen (a mouse gives a real dblclick), as in Thistle Flow
+function onDoubleTap(el, handler) {
+  let last = null;
+  el.addEventListener('pointerup', e => {
+    if (e.pointerType === 'mouse') return;
+    const now = performance.now();
+    if (last && now - last.t < 350 && Math.hypot(e.clientX - last.x, e.clientY - last.y) < 16) { last = null; handler(e); }
+    else last = { t: now, x: e.clientX, y: e.clientY };
+  });
 }
 
 // ---------------- chat ----------------
@@ -265,17 +469,25 @@ function renderChat() {
 }
 function messageEl(m) {
   const wrap = h('div', { class: 'msg ' + m.role, 'data-id': m.id });
-  if (m.role === 'user') { wrap.append(h('div', { class: 'who' }, 'You'), h('div', { class: 'bubble' }, m.content)); return wrap; }
-  if (m.role === 'searches') return searchesEl(m, wrap);
+  const del = (label = '🗑') => h('button', { class: 'icon', title: 'Delete this from the chat', onclick: () => deleteMessage(m) }, label);
+  if (m.role === 'user') {
+    wrap.append(h('div', { class: 'who' }, 'You', h('span', { class: 'grow' }), del()), h('div', { class: 'bubble' }, m.content),
+      h('div', { class: 'msg-actions' },
+        h('button', { class: 'btn', title: 'Put this question in the box to adjust it (not sent)', onclick: () => toBox(m.content) }, '✎ Copy to box'),
+        h('button', { class: 'btn', title: 'Ask this question again now, with the tabs and model selected now', onclick: () => rerun(m) }, '↻ Re-run')));
+    return wrap;
+  }
+  if (m.role === 'searches') { searchesEl(m, wrap); wrap.querySelector('.who').append(h('span', { class: 'grow' }), del()); return wrap; }
   if (m.role === 'results') {
-    wrap.append(h('div', { class: 'who' }, '🔬 Thistle Plot results sent to the model'),
+    wrap.append(h('div', { class: 'who' }, '🔬 Thistle Plot results sent to the model', h('span', { class: 'grow' }), del()),
       h('div', { class: 'bubble' }, h('details', {}, h('summary', {}, `${m.meta.count || ''} result(s) — show what was sent`), h('pre', { style: { whiteSpace: 'pre-wrap', fontSize: '11px' } }, m.content))));
     return wrap;
   }
   const meta = m.meta || {};
   const who = h('div', { class: 'who' }, `${meta.model?.includes('/') ? '🏛' : '☁'} ${meta.model || 'assistant'}`,
     meta.ctxMode && meta.ctxMode !== 'none' ? h('span', {}, `· ${meta.ctxMode === 'full' ? 'full text' : 'retrieved passages'} of ${meta.nSources} source(s)`) : null,
-    meta.studio ? h('span', {}, `· Studio: ${meta.studio}`) : null);
+    meta.tabNames?.length ? h('button', { class: 'link-btn', title: 'Show the tabs and sources used for this answer', onclick: () => usedSourcesDialog(m) }, `· 📁 ${meta.tabNames.join(', ')}`) : null,
+    meta.studio ? h('span', {}, `· Studio: ${meta.studio}`) : null, h('span', { class: 'grow' }), del());
   const bubble = h('div', { class: 'bubble' });
   if (meta.web?.citations?.length) bubble.append(h('details', { class: 'web-list' }, h('summary', {}, `🌐 Web findings (${meta.web.citations.length} sources, via ${meta.web.model})`),
     h('ol', {}, meta.web.citations.map(c => h('li', {}, h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.title))))));
@@ -286,9 +498,52 @@ function messageEl(m) {
   if (meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, '🌐 Web search did not run, so this answer uses only your sources and the model\'s own knowledge. ', h('details', {}, h('summary', {}, 'Why'), meta.webError)));
   if (meta.error) bubble.append(h('div', { class: 'err-box' }, meta.error));
   wrap.append(who, bubble, h('div', { class: 'msg-actions' },
+    questionOf(m) ? h('button', { class: 'btn', title: 'Ask the same question again (new answer below; this one is kept)', onclick: () => rerun(questionOf(m)) }, '↻ Regenerate') : null,
     h('button', { class: 'btn', onclick: () => saveNote(m.content.replace(/```thistle-plot[\s\S]*?```/g, ''), firstLine(m.content), meta.cites, meta.web) }, '🗒 Save as note'),
     h('button', { class: 'btn export-btn', title: 'Word, Excel, CSV, Markdown, HTML or PDF', onclick: e => exportMenu(e.currentTarget, doc) }, '⤓ Export ▾')));
   return wrap;
+}
+// ---------- chat housekeeping: delete, re-run, copy to box, trace sources ----------
+function questionOf(a) { // the user question an answer belongs to
+  const i = S.messages.indexOf(a);
+  for (let k = i - 1; k >= 0; k--) { const m = S.messages[k]; if (m.role === 'user') return m; if (m.role === 'assistant' && !m.meta?.studio) break; }
+  return null;
+}
+async function deleteMessage(m) {
+  if (S.busy) return toast('Wait for the current answer to finish', true);
+  let doomed = [m];
+  if (m.role === 'user') { // the question and everything that answered it, up to the next question
+    const i = S.messages.indexOf(m);
+    for (let k = i + 1; k < S.messages.length && S.messages[k].role !== 'user'; k++) doomed.push(S.messages[k]);
+    if (!confirm(doomed.length > 1 ? `Delete this question and its ${doomed.length - 1} answer(s)?` : 'Delete this question?')) return;
+  } else if (!confirm(m.role === 'assistant' ? 'Delete this answer?' : 'Delete this from the chat?')) return;
+  for (const x of doomed) await db.del('messages', x.id);
+  S.messages = S.messages.filter(x => !doomed.includes(x)); await saveNb(); renderChat();
+}
+function toBox(text) {
+  const ta = $('#prompt'); ta.value = text; ta.focus(); ta.setSelectionRange(text.length, text.length);
+  ta.scrollIntoView({ block: 'nearest' }); toast('Question placed in the box: adjust it, then press Send');
+}
+function rerun(q) { if (q) send(q.content); }
+const pastQuestions = () => [...new Set(S.messages.filter(m => m.role === 'user').map(m => m.content).reverse())];
+function historyMenu(anchor) {
+  const qs = pastQuestions().slice(0, 25), p = $('#popover'); p.innerHTML = '';
+  p.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, qs.length ? 'Earlier questions: click to put in the box (not sent)' : 'No earlier questions in this notebook'),
+    ...qs.map(q => h('button', { class: 'menu-item', title: q, onclick: () => { p.hidden = true; toBox(q); } }, h('span', {}, q.length > 110 ? q.slice(0, 110) + '…' : q)))));
+  p.hidden = false; const r = anchor.getBoundingClientRect();
+  p.style.left = Math.max(8, Math.min(r.left, innerWidth - p.offsetWidth - 10)) + 'px';
+  p.style.top = Math.max(8, r.top - p.offsetHeight - 6) + 'px';
+}
+function usedSourcesDialog(m) {
+  const meta = m.meta || {}, ids = meta.sourceIds || [];
+  const rows = ids.map((id, i) => ({ id, name: meta.sourceNames?.[i] || id, src: S.sources.find(x => x.id === id) }));
+  modal('Sources used for this answer', h('div', {},
+    h('p', {}, `Tabs: ${(meta.tabNames || []).join(', ') || '—'} · model ${meta.model || '?'} · ${new Date(m.t).toLocaleString()}`),
+    h('ul', { class: 'used-list' }, rows.map(r => h('li', {}, r.src ? h('button', { class: 'link-btn', onclick: () => viewSource(r.src) }, r.name) : h('span', { class: 'hint' }, `${r.name} (no longer in this notebook)`)))),
+    h('div', { class: 'modal-foot' }, h('button', { class: 'btn', title: 'Tick exactly the tabs that were used for this answer', onclick: async () => {
+      const want = new Set(meta.tabIds || []); if (!S.nb.tabs.some(t => want.has(t.id))) return toast('Those tabs no longer exist', true);
+      S.nb.tabs.forEach(t => (t.active = want.has(t.id))); await saveNb(); renderSources(); closeModal(); toast('Tabs set as for that answer');
+    } }, '📁 Use the same tabs now'))));
 }
 const firstLine = t => (String(t).replace(/[#*`>]/g, '').split('\n').find(l => l.trim()) || 'Note').trim().slice(0, 70);
 function showCite(c, e) {
@@ -301,7 +556,7 @@ function showCite(c, e) {
   p.style.top = (r.bottom + 6 + p.offsetHeight > innerHeight ? Math.max(10, r.top - p.offsetHeight - 6) : r.bottom + 6) + 'px';
 }
 
-const enabledSources = () => S.sources.filter(s => s.enabled && s.status === 'ready');
+const enabledSources = () => S.sources.filter(s => s.enabled && s.status === 'ready' && inActiveTab(s));
 async function prepare(query, sources, budgetOverride) {
   const model = currentModel(), info = S.elm.info(model);
   const chunksBySrc = new Map();
@@ -337,7 +592,8 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
   try {
     const sources = enabledSources();
     const { context, cites, mode: ctxMode } = await prepare(query, sources);
-    Object.assign(a.meta, { cites, ctxMode, nSources: sources.length });
+    Object.assign(a.meta, { cites, ctxMode, nSources: sources.length, sourceIds: sources.map(x => x.id), sourceNames: sources.map(x => x.name).slice(0, 200),
+      tabIds: [...activeTabIds()], tabNames: S.nb.tabs.filter(t => t.active).map(t => t.name) });
     let web = null;
     if ($('#webToggle').checked && !onCampus() && depth === 0) {
       el.querySelector('.who').textContent = `🌐 searching the web via ${searchModel()}…`;
@@ -354,7 +610,7 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
         : S.settings.webSearchStatus === 'unavailable' ? 'ELM does not allow web search with this API key (⚙ Settings → Test web search)'
         : 'the 🌐 Web search box was not ticked';
     }
-    const datasets = sources.filter(s => s.tables).map(s => ({ name: s.name, tables: s.tables }));
+    const datasets = sources.filter(tablesOf).map(s => ({ name: s.name, tables: tablesOf(s) }));
     const sys = systemPrompt({ mode: mode || $('#modeSelect').value, tone: tone ?? $('#toneSelect').value, hasSources: !!sources.length, ctxMode,
       webEnabled: !!web, webNote: a.meta.webNote || (a.meta.webError ? 'the search was refused by ELM' : ''), datasets, today: new Date().toDateString() })
       + (context ? `\n\n# SOURCES\n${context}` : '')
@@ -440,7 +696,9 @@ function searchesEl(m, wrap) {
 function setBusy(b) { S.busy = b; $('#btnSend').disabled = b; $('#btnStop').disabled = !b; }
 
 // ---------------- Thistle Plot analysis cards ----------------
-function datasetsNow() { return S.sources.filter(s => s.tables).map(s => ({ name: s.name, tables: s.tables })); }
+// Tables kept in the notebook, or re-read this session from a linked original (datasets too large to keep)
+const tablesOf = s => s.tables || S.tableCache.get(s.id) || null;
+function datasetsNow() { return S.sources.filter(tablesOf).map(s => ({ name: s.name, tables: tablesOf(s) })); }
 function tpCard(m, k) {
   const parsed = parseSpecs(m.content)[k];
   const card = h('div', { class: 'tp-card' });
@@ -567,10 +825,10 @@ async function runStudio(t) {
       const r = await complete(t, src, tone);
       note.content = r.text; note.meta.cites = r.cites; note.meta.web = r.web;
     }
-    note.meta.model = currentModel();
+    note.meta.model = currentModel(); note.meta.tabNames = S.nb.tabs.filter(t => t.active).map(t => t.name);
   } catch (e) { note.content += `\n\n**Error:** ${e.message}`; }
   finally { delete note.meta.busy; delete note.meta.progress; setBusy(false); }
-  await db.put('notes', note); renderNotes(); refreshCosts(); viewNote(note);
+  await db.put('notes', note); await saveNb(); renderNotes(); refreshCosts(); viewNote(note);
 }
 async function complete(t, sources, tone, extraUser = '') {
   const model = currentModel();
@@ -578,7 +836,7 @@ async function complete(t, sources, tone, extraUser = '') {
   const query = t.prompt + ' ' + extraUser;
   // Marking: give the whole submission + rubric when possible
   const { context, cites, mode: ctxMode } = await prepare(query, sources, t.perSubmission ? 200000 : undefined);
-  const datasets = sources.filter(s => s.tables).map(s => ({ name: s.name, tables: s.tables }));
+  const datasets = sources.filter(tablesOf).map(s => ({ name: s.name, tables: tablesOf(s) }));
   const sys = systemPrompt({ mode: t.mode, tone, hasSources: true, ctxMode, webEnabled: false, datasets, today: new Date().toDateString() }) + `\n\n# SOURCES\n${context}`;
   S.abort = new AbortController();
   const text = await S.elm.chatStream(model, [{ role: 'system', content: sys }, { role: 'user', content: `${t.prompt}\n${extraUser}` }],
@@ -595,7 +853,7 @@ function renderNotes() {
 }
 async function saveNote(content, title, cites = {}, web = null) {
   const n = { id: uid(), nb: S.nb.id, title, content, t: Date.now(), meta: { cites, web } };
-  S.notes.unshift(n); await db.put('notes', n); renderNotes(); toast('Saved to Notes');
+  S.notes.unshift(n); await db.put('notes', n); await saveNb(); renderNotes(); toast('Saved to Notes');
 }
 function viewNote(n) {
   const body = h('div', {});
@@ -605,7 +863,7 @@ function viewNote(n) {
   const edit = () => {
     const ta = h('textarea', { class: 'note-edit' }); ta.value = n.content;
     const title = h('input', { type: 'text', value: n.title, style: { width: '100%', marginBottom: '6px' } });
-    body.innerHTML = ''; body.append(title, ta, h('div', { class: 'modal-foot' }, h('button', { class: 'btn primary', onclick: async () => { n.content = ta.value; n.title = title.value; await db.put('notes', n); renderNotes(); show(); } }, 'Save')));
+    body.innerHTML = ''; body.append(title, ta, h('div', { class: 'modal-foot' }, h('button', { class: 'btn primary', onclick: async () => { n.content = ta.value; n.title = title.value; await db.put('notes', n); await saveNb(); renderNotes(); show(); } }, 'Save')));
   };
     const name = safeName(n.title);
   modal(n.title, h('div', {}, h('div', { class: 'tp-btns', style: { marginBottom: '8px' } },
@@ -614,7 +872,7 @@ function viewNote(n) {
     h('button', { class: 'btn small', onclick: () => saveBlob(markdownToDocx(withRefs(doc()), n.title), `${name}.docx`) }, '⤓ Word'),
     ...(extractTables(n.content).length ? [h('button', { class: 'btn small', title: 'Every table in this report as a sheet, plus the cited sources', onclick: () => exportXlsx(doc()) }, '⤓ Excel')] : []),
     h('button', { class: 'btn small', title: 'Use this note as a source for further questions', onclick: async () => { closeModal(); await addTextSource(n.title, n.content, 'note', 'draft'); } }, '→ Add as source'),
-    h('button', { class: 'btn small danger', onclick: async () => { if (!confirm('Delete this note?')) return; await db.del('notes', n.id); S.notes = S.notes.filter(x => x !== n); renderNotes(); closeModal(); } }, '🗑 Delete')), body));
+    h('button', { class: 'btn small danger', onclick: async () => { if (!confirm('Delete this note?')) return; await db.del('notes', n.id); S.notes = S.notes.filter(x => x !== n); await saveNb(); renderNotes(); closeModal(); } }, '🗑 Delete')), body));
 }
 // Exported reports keep their citations readable outside the app: [n] → list of sources + locations
 const citedNumbers = content => [...new Set([...String(content).matchAll(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g)].flatMap(m => m[1].match(/\d+/g).map(Number)))].sort((a, b) => a - b);
@@ -809,6 +1067,13 @@ PDF (scanned pages are read by a vision model), Word, PowerPoint, Excel/CSV, tex
 - **Data analysis**: design, quality problems, appropriate tests, next experiments.
 - **Scientific writing**: abstracts, lay summaries, introductions, discussions, rewrites — choose the **Audience** (lay public, scientists, field experts).
 
+### Working in a notebook
+- **Source tabs**: keep several sets of sources in one notebook. Click a tab to show it; **tick** it to use its sources. Only sources in ticked tabs are used. 📁 under a source puts it in several tabs (e.g. one rubric for every group). Double-click a tab to rename it.
+- The chat is shared across tabs. Each answer shows the tabs it used: click **📁** for the exact sources, and **Use the same tabs now** to restore that selection.
+- **🗑** deletes an answer, or a question with its answers. **↻ Re-run** / **↻ Regenerate** ask again (the old answer stays). **✎ Copy to box**, **🕘 Earlier questions** or **↑ / ↓** in the empty box reuse a question without sending it.
+- **📂 Find files**: point to moved or renamed originals again (choose the folder or the files) to open them, re-read edited files, or analyse very large tables. Links last until the page is closed.
+- Drag the lines between the panes to resize them; double-click to reset. **✕ Close** removes the notebook from this browser after asking whether to save it.
+
 ### Exports
 Reports, notes and answers export to Word, Excel, CSV, Markdown, HTML or PDF (⤓ Export); each table also has its own Excel/CSV/copy buttons.
 
@@ -830,6 +1095,7 @@ Marking with AI help: follow your School's assessment policy; the marker remains
 
 // ---------------- save / open ----------------
 async function saveTnote() {
+  S.nb.savedAt = Date.now(); await db.put('notebooks', S.nb); // put, not touch: saving is not a change
   const json = await db.exportNotebook(S.nb.id);
   saveText(json, `${safeName(S.nb.name)}.${FILE_EXT}`, 'application/json');
 }
@@ -866,9 +1132,20 @@ async function init() {
   $('#toneSelect').onchange = async e => { S.nb.tone = e.target.value; await db.put('notebooks', S.nb); };
   $('#fileInput').onchange = e => { const fs = [...e.target.files]; e.target.value = ''; addFiles(fs); };
   $('#btnPaste').onclick = pasteDialog;
-  $('#srcAll').onchange = async e => { for (const s of S.sources) { s.enabled = e.target.checked; await db.put('sources', s); } renderSources(); };
-  $('#btnSend').onclick = () => { const t = $('#prompt').value.trim(); if (!t) return; $('#prompt').value = ''; send(t); };
-  $('#prompt').onkeydown = e => { if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#btnSend').click(); } };
+  $('#srcAll').onchange = async e => { for (const s of S.sources.filter(x => (x.tabs || []).includes(S.nb.viewTab))) { s.enabled = e.target.checked; await db.put('sources', s); } await saveNb(); renderSources(); };
+  $('#btnFindFiles').onclick = findFilesDialog;
+  $('#btnCloseNb').onclick = closeNotebook;
+  $('#btnHistory').onclick = e => historyMenu(e.currentTarget);
+  setupSplitters();
+  $('#btnSend').onclick = () => { const t = $('#prompt').value.trim(); if (!t) return; $('#prompt').value = ''; S.histPos = -1; send(t); };
+  $('#prompt').onkeydown = e => {
+    if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); $('#btnSend').click(); return; }
+    // ↑ / ↓ in an empty box (or one showing a recalled question) step through earlier questions; nothing is sent
+    const ta = e.target, qs = pastQuestions(), showing = S.histPos >= 0 && ta.value === qs[S.histPos];
+    if (e.key === 'ArrowUp' && !e.shiftKey && (ta.value === '' || showing) && S.histPos < qs.length - 1) { e.preventDefault(); ta.value = qs[++S.histPos]; }
+    else if (e.key === 'ArrowDown' && !e.shiftKey && showing) { e.preventDefault(); S.histPos--; ta.value = S.histPos >= 0 ? qs[S.histPos] : ''; }
+  };
+  $('#prompt').oninput = () => { S.histPos = -1; };
   $('#btnStop').onclick = () => S.abort?.abort();
   $('#btnSuggest').onclick = () => suggestSearches();
   $('#btnClearChat').onclick = async () => { if (!confirm('Delete this notebook\'s chat history? (Sources and notes stay.)')) return; await db.delWhere('messages', 'nb', S.nb.id); S.messages = []; renderChat(); };
@@ -881,7 +1158,7 @@ async function init() {
   $('#btnTheme').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; localStorage.setItem('tn.theme', t); $('#btnTheme').textContent = t === 'dark' ? '🌙' : '☀️'; };
   $('#modalClose').onclick = closeModal;
   $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
-  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn')) $('#popover').hidden = true; });
+  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn,#btnHistory,.tabs-btn')) $('#popover').hidden = true; });
   document.addEventListener('keydown', e => {
     if (e.key === 'F1' || ((e.metaKey || e.ctrlKey) && e.key === '/')) { e.preventDefault(); helpDialog(); }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTnote(); }

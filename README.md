@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.3.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.4.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -48,6 +48,25 @@ The app's **❓ Help** links to all of these:
 3. **＋ Add sources**, set each source's **role** (Paper, Dataset, Rubric, Question, Answer/submission, My draft…), and
    tick the sources to use.
 4. Pick a **Mode** and **Audience**, then ask, or use a **Studio** report.
+
+## Working in a notebook
+- **Source tabs.** Keep several sets of sources in one notebook, for example "Papers", "Marking: group A" and
+  "Marking: group B". Click a tab to show its sources; **tick** a tab to use its sources in chat and Studio. Only ticked
+  sources in ticked tabs are used. A source can belong to several tabs (📁 under the source), e.g. one rubric for every
+  group. Double-click a tab to rename it; ＋ adds one.
+- **One chat, traceable.** The chat continues across tab changes. Each answer shows the tabs it used (📁 …). Clicking that
+  lists the exact sources, and **Use the same tabs now** restores that selection.
+- **Delete and re-run.** 🗑 deletes an answer, or a question together with its answers. **↻ Re-run** asks a question
+  again with the tabs and model selected now; **↻ Regenerate** gives a new answer and keeps the old one for comparison.
+- **Reuse earlier questions.** **✎ Copy to box**, the **🕘 Earlier questions** menu, or **↑ / ↓** in the empty box put
+  an earlier question in the box to adjust. Nothing is sent until you press Send.
+- **Moved files: 📂 Find files.** The notebook keeps the text of every source, so chat works without the original files.
+  To open an original, re-read a file you edited, or analyse a table too large to keep, choose the folder or the
+  files again (as in Thistle Flow). Matching names are linked for the session, and a file whose content changed is
+  flagged with **↻ Re-read**. Moved or copied files are recognised by a fingerprint of their content, not by date.
+- **Resizable panes.** Drag the lines between the three panes; double-click a line to reset it. Widths are remembered.
+- **✕ Close** removes a notebook from this browser. It first asks whether to save it as a `.tnote` file if there are
+  unsaved changes. Saved files open again with 📂 Open; your original files on disk are never touched.
 
 ## What it does
 - **Research papers**: briefing documents, literature comparison tables, gaps and contradictions, **hypothesis
@@ -106,7 +125,7 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   source**. The population statistics become a dataset the assistant can analyse and send on to Thistle Plot. `.tflow`
   files can also be added as sources (gating hierarchy and samples).
 - `.tplot` files can be added as sources (their data table and results).
-- Files follow the suite conventions: `.tnote`, with `{"app": "Thistle Notebook", "format": 1, "appVersion", "kind"}`
+- Files follow the suite conventions: `.tnote`, with `{"app": "Thistle Notebook", "format": 2, "appVersion", "kind"}`
   first. A Thistle Plot or Flow file opened by mistake gets a plain message.
 
 Running TP/TF inside the notebook needs them on the **same site**, e.g. all three on `actinomycetes.github.io`. This
@@ -130,15 +149,17 @@ npm test                                          # no web server needed (tests/
 chat with citations and web search, a Thistle Plot ANOVA (values checked against the CSV), marking, Word/Excel/CSV/HTML
 exports (file structure checked),
 `.tnote` round trip, the on-campus restrictions, and the rule that no other host can be contacted.
-`tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
+`tests/workspace.e2e.cjs` covers source tabs, deleting, re-running and recalling questions, finding moved files,
+resizable panes and closing notebooks. `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.3.0
+## Known limitations of v0.4.0
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional
   settings (thinking level, flex, length limit); otherwise it shows "ELM refused this request".
 - Notebooks live in one browser profile; clearing site data deletes them, so save `.tnote` files for anything important.
+- Browsers cannot remember where files are on disk: links made with 📂 Find files last until the page is closed.
 - One request may not exceed ELM's 10 MiB limit; very large source sets are searched rather than sent whole.
 - Scanned PDFs: the first 60 scanned pages are read. Excel dates appear as serial numbers. No web-page import (by design).
 - The Thistle Flow import reads TF's Statistics table, so set up the statistics columns you need in TF first.

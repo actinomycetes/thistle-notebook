@@ -64,7 +64,7 @@ label.inline { display: inline-flex; gap: 4px; align-items: center; color: var(-
 #paneSources { width: 300px; min-width: 200px; padding: 0 10px 8px; overflow-y: auto; }
 #paneStudio { width: 310px; min-width: 220px; padding: 0 10px 8px; overflow-y: auto; }
 .pane.chat { flex: 1; background: var(--bg); min-width: 340px; }
-.vsplit { width: 1px; background: var(--border); flex: none; }
+.vsplit { flex: none; }
 .pane-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
 .pane h3 { margin: 10px 0 6px; font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
 .pane h3 small { text-transform: none; letter-spacing: 0; font-weight: 400; }
@@ -202,3 +202,32 @@ pre.cmd { background: var(--code-bg); color: var(--text); padding: 6px 8px; bord
 .search-list li { margin: 8px 0; }
 .search-list code { background: var(--code-bg); padding: 1px 5px; border-radius: 3px; font-size: 12px; overflow-wrap: anywhere; }
 .search-links { display: flex; gap: 5px; margin-top: 4px; flex-wrap: wrap; }
+
+/* resizable panes (Thistle suite splitters) */
+.vsplit { width: 5px; margin: 0 -2px; position: relative; z-index: 5; cursor: col-resize; background: transparent; border-left: 2px solid transparent; border-right: 2px solid transparent; background-clip: padding-box; background-color: var(--border); touch-action: none; }
+.vsplit:hover, body.resizing .vsplit { background-color: var(--accent); }
+body.resizing { cursor: col-resize; user-select: none; }
+body.resizing iframe { pointer-events: none; }
+
+/* source tabs */
+.src-tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 0 0 6px; border-bottom: 1px solid var(--border); }
+.src-tab { display: flex; align-items: center; gap: 4px; padding: 4px 6px; font-size: 11.5px; font-weight: 600; color: var(--muted); border-bottom: 2px solid transparent; cursor: pointer; max-width: 100%; }
+.src-tab .tab-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 130px; }
+.src-tab small { font-weight: 400; background: var(--panel-2); border-radius: 8px; padding: 0 5px; }
+.src-tab.view { color: var(--accent-tx); border-bottom-color: var(--accent); }
+.src-tab:not(.active) .tab-name { text-decoration: line-through; text-decoration-color: var(--muted); }
+.src-tab:hover { color: var(--text); }
+.src-tab .icon { font-size: 11px; padding: 0 2px; }
+.tab-add { border: none; background: none; color: var(--muted); font-size: 15px; font-weight: 700; cursor: pointer; padding: 2px 8px; }
+.tab-add:hover { color: var(--accent-tx); }
+.tabs-btn { font-size: 12px !important; }
+
+/* chat housekeeping */
+.msg .who .grow { flex: 1; }
+.msg .who .icon { font-size: 12px; opacity: .6; }
+.msg:hover .who .icon { opacity: 1; }
+.link-btn { font: inherit; font-size: inherit; background: none; border: none; color: var(--accent-tx); cursor: pointer; padding: 0; text-align: left; }
+.link-btn:hover { text-decoration: underline; }
+.used-list { padding-left: 18px; } .used-list li { margin: 3px 0; }
+#popover .menu-item span { overflow-wrap: anywhere; }
+.src-item .sub span { white-space: nowrap; }

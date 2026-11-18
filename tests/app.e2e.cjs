@@ -238,7 +238,7 @@ function chatReply(body) {
   const [dl3] = await Promise.all([page.waitForEvent('download'), page.click('#btnSave')]);
   const tn = path.join(OUT, 'nb.tnote'); fs.copyFileSync(await dl3.path(), tn);
   const tnj = JSON.parse(fs.readFileSync(tn, 'utf8'));
-  ok(tnj.app === 'Thistle Notebook' && tnj.format === 1 && tnj.kind === 'notebook' && tnj.sources.length === 6, '.tnote header + content');
+  ok(tnj.app === 'Thistle Notebook' && tnj.format === 2 && tnj.kind === 'notebook' && tnj.sources.length === 6, '.tnote header + content');
   await page.setInputFiles('#openInput', tn);
   await page.waitForFunction(() => document.querySelectorAll('#nbSelect option').length === 2);
   ok(await page.evaluate(() => window.thistleNotebook.sources.length === 6 && window.thistleNotebook.messages.length > 3), '.tnote reopened as a new notebook');

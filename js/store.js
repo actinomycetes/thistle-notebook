@@ -74,7 +74,7 @@ export function identifyFile(name, text) {
 
 export async function importNotebook(d) {
   const map = new Map(), newNb = uid();
-  const nb = { ...d.notebook, id: newNb, updated: Date.now() };
+  const now = Date.now(), nb = { ...d.notebook, id: newNb, updated: now, savedAt: now }; // just opened from a file = nothing unsaved
   const re = id => { if (!map.has(id)) map.set(id, uid()); return map.get(id); };
   await put('notebooks', nb);
   await putMany('sources', (d.sources || []).map(s => ({ ...s, id: re(s.id), nb: newNb })));
