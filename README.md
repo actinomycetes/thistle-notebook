@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.1.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.2.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -47,8 +47,11 @@ models, and web search is disabled. Use this for exam scripts, dissertations, un
   comparisons), proposes analyses and next experiments. The AI **never calculates p-values**: see below.
 - **Scientific writing**: abstracts, lay summaries, introductions, discussions, or a rewrite of your draft for
   **lay public / scientists in general / field experts**.
-- Answers cite numbered passages; click a number to see it in the source. Notes export to **Word** and Markdown, with a
-  list of the cited sources.
+- Answers cite numbered passages; click a number to see it in the source.
+- **Export** any report, note or answer (⤓ Export): **Word** (wide tables on landscape pages), **Excel** (every table as
+  a sheet, numbers as numbers, plus a "Sources cited" sheet), **CSV** per table, Markdown, a standalone **HTML** page, or
+  **Print / PDF**. Every table also has its own ⤓ Excel, ⤓ CSV and 📋 Copy table buttons (pastes as a table into
+  Excel or Word). Files are generated in the browser.
 - When the selected sources fit, their full text is sent; otherwise the most relevant passages are found by keyword +
   embedding search (embeddings from ELM, on-campus model preferred).
 - **Model switching**: any chat model ELM offers your institution, with optional reasoning effort and OpenAI flex tier.
@@ -83,17 +86,17 @@ Then open http://localhost:8765/thistle-notebook/ (ELM accepts browser requests 
 
 ## Tests
 ```bash
-npm install && npx playwright install chromium   # once
-npm start &                                       # serves the parent folder on :8765
-npm test
+npm install && npx playwright install chromium   # once; thistle-plot/ must be checked out beside this repo
+npm test                                          # no web server needed (tests/serve.cjs serves the files)
 ```
 `tests/app.e2e.cjs` mocks ELM at its real address, so the security policy still applies. It drives every source type,
-chat with citations and web search, a Thistle Plot ANOVA (values checked against the CSV), marking, Word export,
+chat with citations and web search, a Thistle Plot ANOVA (values checked against the CSV), marking, Word/Excel/CSV/HTML
+exports (file structure checked),
 `.tnote` round trip, the on-campus restrictions, and the rule that no other host can be contacted.
 `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.1.0
+## Known limitations of v0.2.0
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model, the web-search tool on `/responses`, and reasoning output from Qwen.
 - Notebooks live in one browser profile; clearing site data deletes them, so save `.tnote` files for anything important.

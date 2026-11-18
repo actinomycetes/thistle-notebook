@@ -1,10 +1,13 @@
 // Runs every table layout through the real Thistle Plot (sibling checkout ../thistle-plot) and checks the numbers.
-// Usage: serve the PARENT folder (python3 -m http.server 8765) then: node tests/layouts.e2e.cjs
+// Usage: node tests/layouts.e2e.cjs (files are served by tests/serve.cjs)
 const { chromium } = require('playwright');
+const serveSuite = require('./serve.cjs');
 const BASE = process.env.TN_URL || 'http://localhost:8765/thistle-notebook/index.html';
 let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); if (!c) fails++; };
 (async () => {
-  const b = await chromium.launch(), page = await (await b.newContext()).newPage();
+  const b = await chromium.launch(), bctx = await b.newContext();
+  if (!process.env.TN_URL) await serveSuite(bctx);
+  const page = await bctx.newPage();
   if (process.env.CDN_DIR) { const fs = require('fs'), path = require('path');
     await page.route('https://cdnjs.cloudflare.com/**', r => { const f = path.join(process.env.CDN_DIR, r.request().url().replace('https://cdnjs.cloudflare.com/ajax/libs/', '').replace(/\//g, '__')); fs.existsSync(f) ? r.fulfill({ body: fs.readFileSync(f), contentType: 'application/javascript' }) : r.abort(); }); }
   await page.route('https://elm.edina.ac.uk/**', r => r.fulfill({ status: 401, json: { error: { message: 'no key in test' } } }));

@@ -1,5 +1,6 @@
-// End-to-end test (serve the folder that contains thistle-notebook/ and thistle-plot/ on :8765 first): mock ELM (route interception at the real ELM URL, so the CSP still applies), real Thistle Plot in the iframe.
+// End-to-end test (thistle-plot/ must be checked out beside this repo; files are served by tests/serve.cjs): mock ELM (route interception at the real ELM URL, so the CSP still applies), real Thistle Plot in the iframe.
 const { chromium } = require('playwright');
+const serveSuite = require('./serve.cjs');
 const fs = require('fs'), path = require('path');
 const SP = __dirname, FX = path.join(SP, 'fixtures'), CDN = process.env.CDN_DIR || '', OUT = path.join(SP, '..', 'test-output');
 fs.mkdirSync(OUT, { recursive: true });
@@ -17,6 +18,7 @@ function chatReply(body) {
   const sys = body.messages[0].content, last = body.messages[body.messages.length - 1].content;
   if (sys.includes('# NOW')) return 'Interpretation: Thistle Plot reports a one-way ANOVA. DrugA differs from Vehicle; see the post-hoc table. [1]';
   if (/anova/i.test(last)) return 'I will run a one-way ANOVA in Thistle Plot.\n\n```thistle-plot\n' + JSON.stringify({ title: 'Weight by treatment', test: 'anova', dataset: 'mice.csv', layout: 'long', group: 'Treatment', value: 'Weight_g', control: 'Vehicle', options: { 'Post-hoc correction': 'Tukey', 'Bogus option': 'x' }, why: '3 independent groups' }) + '\n```\n';
+  if (/comparison table/i.test(last)) return '## Comparison table\n\n| Citation | Research question | Design | Sample size | Key methods | Main findings | Limitations (authors) | Limitations (observed) |\n|---|---|---|---|---|---|---|---|\n| Ma et al., 2025 [1] | Roles of circRNA peptides | Review | N/A | **Synthesis** | Peptides exist [1, 2] | Detection limited | No primary data |\n| Sanger 1976 [3] | Viroid structure | EM, µ-scale | 12 | Electron microscopy | Circular RNA, ±5% | Old methods | Small n |\n\n## Patterns\n\n- Stability recurs [1].';
   if (/Mark THIS submission/.test(last)) return '**Suggested overall mark: 62 / 100**\n\n| criterion | mark |\n|---|---|\n| Understanding | 18/30 [1] |\n\nStrengths: clear [2].';
   return '## Summary\nThe paper reports DrugA increases weight [1, 2]. The rubric has bands [3]. Invalid cite [999].';
 }
@@ -24,6 +26,7 @@ function chatReply(body) {
 (async () => {
   const browser = await chromium.launch();
   const ctx = await browser.newContext({ viewport: { width: 1500, height: 950 }, acceptDownloads: true });
+  if (!process.env.TN_URL) await serveSuite(ctx);
   const page = await ctx.newPage();
   const errors = [];
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
@@ -99,6 +102,7 @@ function chatReply(body) {
   const card = await page.evaluate(() => { const c = document.querySelector('.tp-card'); return { status: c.querySelector('.status')?.textContent, result: c.querySelector('.tp-result')?.textContent.slice(0, 400), img: !!c.querySelector('.tp-result img'), warn: c.querySelector('.warn-box')?.textContent }; });
   console.log(card);
   ok(card.status === 'run in Thistle Plot', 'analysis ran in Thistle Plot');
+  ok(await page.$('.tp-card .table-tools') === null, 'Thistle Plot result tables get no Markdown table buttons');
   ok(/ANOVA/i.test(card.result || ''), 'TP ANOVA result shown in card');
   ok(card.img, 'TP auto-plot captured');
   ok((card.warn || '').includes('Bogus option'), 'unknown option reported');
@@ -123,6 +127,40 @@ function chatReply(body) {
   const docxPath = path.join(OUT, 'note.docx'); fs.copyFileSync(await dl2.path(), docxPath);
   await page.screenshot({ path: path.join(OUT, '3-note.png') });
   await page.keyboard.press('Escape');
+
+  // Literature comparison table → Excel / CSV / Word (landscape)
+  await page.click('#studio button:has-text("Literature comparison table")');
+  await page.waitForSelector('#modal:not([hidden]) .table-tools', { timeout: 20000 });
+  const [x1] = await Promise.all([page.waitForEvent('download'), page.click('#modalBody .tp-btns button:has-text("Excel")')]);
+  const xlsxPath = path.join(OUT, 'lit.xlsx'); fs.copyFileSync(await x1.path(), xlsxPath);
+  const { unzip } = await import(path.join(__dirname, '..', 'js', 'zip.js'));
+  const xz = await unzip(fs.readFileSync(xlsxPath));
+  const wb = await xz.text('xl/workbook.xml'), sh1 = await xz.text('xl/worksheets/sheet1.xml'), sh2 = await xz.text('xl/worksheets/sheet2.xml');
+  ok(/name="Comparison table"/.test(wb) && /name="Sources cited"/.test(wb), 'xlsx: table sheet named from heading + Sources sheet');
+  ok(sh1.includes('Limitations (observed)') && sh1.includes('Ma et al., 2025 [1]') && sh1.includes('Synthesis') && !sh1.includes('**'), 'xlsx: header + cells, Markdown stripped');
+  ok(/<c r="D3" s="2"><v>12<\/v><\/c>/.test(sh1), 'xlsx: numeric cell stored as a number');
+  ok(sh1.includes('µ-scale') && sh1.includes('±5%'), 'xlsx: special characters kept');
+  ok(sh2.includes('paper.pdf') || sh2.includes('[1]'), 'xlsx: cited sources listed');
+  const [c1] = await Promise.all([page.waitForEvent('download'), page.click('#modalBody .table-tools button:has-text("CSV")')]);
+  const csv = fs.readFileSync(await c1.path(), 'utf8');
+  ok(csv.startsWith('\uFEFFCitation,Research question') && csv.includes('"Peptides exist [1, 2]"'), 'CSV: BOM, header, quoted commas');
+  const [w1] = await Promise.all([page.waitForEvent('download'), page.click('#modalBody .tp-btns button:has-text("Word")')]);
+  const dz = await unzip(fs.readFileSync(await w1.path())), dx = await dz.text('word/document.xml');
+  ok(dx.includes('<w:tblGrid>') && (dx.match(/<w:gridCol /g) || []).length === 8, 'docx: table has tblGrid with 8 columns');
+  ok(dx.includes('w:orient="landscape"'), 'docx: wide table → landscape pages');
+  fs.copyFileSync(await w1.path(), path.join(OUT, 'lit.docx'));
+  await page.click('#modalBody .export-btn');
+  const menu = await page.$$eval('#popover .menu-item span', els => els.map(e => e.textContent));
+  ok(menu.some(t => t.startsWith('📊 Excel')) && menu.some(t => t.startsWith('🧾 CSV')) && menu.some(t => t.includes('HTML')) && menu.some(t => t.includes('PDF')), 'export menu lists Word/Excel/CSV/Markdown/HTML/PDF');
+  const [h1] = await Promise.all([page.waitForEvent('download'), page.click('#popover .menu-item:has-text("HTML page")')]);
+  const html = fs.readFileSync(await h1.path(), 'utf8');
+  ok(html.includes('<table>') && html.includes('Sources cited') && !html.includes('<script'), 'HTML export: tables + sources, no scripts');
+  await page.screenshot({ path: path.join(OUT, '3b-lit.png') });
+  await page.keyboard.press('Escape');
+  // chat answers have the same export menu
+  await page.click('.msg.assistant .export-btn');
+  ok(await page.isVisible('#popover .menu-item'), 'chat answer has export menu');
+  await page.keyboard.press('Escape'); await page.mouse.click(5, 300);
 
   // save .tnote and reopen
   const [dl3] = await Promise.all([page.waitForEvent('download'), page.click('#btnSave')]);

@@ -185,3 +185,12 @@ details.think { color: var(--muted); font-size: 12px; margin: 6px 0; } details.t
   .vsplit { display: none; }
   .form-grid { grid-template-columns: 1fr; } .form-grid .full { grid-column: 1; }
 }
+
+/* export menu + per-table tools */
+.table-tools { display: flex; gap: 4px; margin: -4px 0 10px; flex-wrap: wrap; }
+.table-tools .btn { font-size: 10.5px; padding: 1px 7px; }
+.menu { display: flex; flex-direction: column; gap: 1px; }
+.menu-head { font-size: 11px; color: var(--muted); padding: 2px 4px 6px; border-bottom: 1px solid var(--border); margin-bottom: 4px; }
+.menu-item { font: inherit; text-align: left; background: none; border: none; color: var(--text); padding: 5px 6px; border-radius: 4px; cursor: pointer; display: flex; flex-direction: column; }
+.menu-item:hover { background: var(--panel-2); }
+.menu-item small { color: var(--muted); font-size: 10.5px; }

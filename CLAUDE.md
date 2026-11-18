@@ -42,11 +42,14 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
 - `js/thistle.js` spec parsing, `buildG`, `.tplot` writer (TP format 2), `ThistlePlot` / `ThistleFlow` iframe bridges
   (TP globals: `applyG`, `#asel`, `runAnalysis`, `statTabs`/`plotTabs` via `w.eval`, `_saveBlob` capture; TF: Statistics
   tab `#statsTable`). If TP/TF rename these, update the bridge and the tests.
-- `js/md.js` Markdown rendering with citation chips and analysis-card slots; Markdown → .docx.
+- `js/md.js` Markdown rendering with citation chips, analysis-card slots and per-table tools; Markdown → .docx
+  (tables need `<w:tblGrid>`; >5 columns → landscape).
+- `js/export.js` `extractTables` (Markdown tables in document order), .xlsx writer (inline strings, numbers as
+  numbers, frozen header, Sources sheet), CSV with BOM, TSV/HTML clipboard, standalone HTML report.
 - `js/app.js` controller and UI.
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README
    ("current vX.Y.Z", "Known limitations of vX.Y.Z").
-2. `npm test` must pass (serve the parent folder with TP checked out beside this repo). New feature means new test.
+2. `npm test` must pass (TP checked out beside this repo; `tests/serve.cjs` serves the files, no server needed). New feature means new test.
 3. Commit as `vX.Y.Z: <summary>`.

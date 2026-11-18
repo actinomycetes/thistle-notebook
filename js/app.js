@@ -7,6 +7,7 @@ import { parseFile, ROLES, guessRole, ACCEPT, splitLines, profileTable } from '.
 import { chunkSegments, buildContext } from './retrieval.js';
 import { MODES, TONES, STUDIO, TP_TESTS, systemPrompt } from './prompts.js';
 import { renderMarkdown, markdownToDocx } from './md.js';
+import { extractTables, tableToCsv, tableToTsv, tablesToXlsx, reportHtml, markdownToHtml } from './export.js';
 import { parseSpecs, findTable, buildG, tplotFile, ThistlePlot, ThistleFlow, defaultSuiteUrl } from './thistle.js';
 
 if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
@@ -265,11 +266,12 @@ function messageEl(m) {
   const bubble = h('div', { class: 'bubble' });
   if (meta.web?.citations?.length) bubble.append(h('details', { class: 'web-list' }, h('summary', {}, `🌐 Web findings (${meta.web.citations.length} sources, via ${meta.web.model})`),
     h('ol', {}, meta.web.citations.map(c => h('li', {}, h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.title))))));
-  bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)) }));
+  const doc = { title: firstLine(m.content), content: m.content, cites: meta.cites || {}, web: meta.web };
+  bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)), tableTools: tableTools(doc) }));
   if (meta.error) bubble.append(h('div', { class: 'err-box' }, meta.error));
   wrap.append(who, bubble, h('div', { class: 'msg-actions' },
     h('button', { class: 'btn', onclick: () => saveNote(m.content.replace(/```thistle-plot[\s\S]*?```/g, ''), firstLine(m.content), meta.cites, meta.web) }, '🗒 Save as note'),
-    h('button', { class: 'btn', onclick: () => navigator.clipboard.writeText(m.content).then(() => toast('Copied')) }, '📋 Copy')));
+    h('button', { class: 'btn export-btn', title: 'Word, Excel, CSV, Markdown, HTML or PDF', onclick: e => exportMenu(e.currentTarget, doc) }, '⤓ Export ▾')));
   return wrap;
 }
 const firstLine = t => (String(t).replace(/[#*`>]/g, '').split('\n').find(l => l.trim()) || 'Note').trim().slice(0, 70);
@@ -519,29 +521,80 @@ async function saveNote(content, title, cites = {}, web = null) {
 }
 function viewNote(n) {
   const body = h('div', {});
-  const show = () => { body.innerHTML = ''; body.append(renderMarkdown(n.content, { cites: n.meta?.cites || {}, web: n.meta?.web?.citations || [], onCite: (_, c, e) => showCite(c, e) })); };
+  const doc = () => ({ title: n.title, content: n.content, cites: n.meta?.cites || {}, web: n.meta?.web });
+  const show = () => { body.innerHTML = ''; body.append(renderMarkdown(n.content, { cites: n.meta?.cites || {}, web: n.meta?.web?.citations || [], onCite: (_, c, e) => showCite(c, e), tableTools: tableTools(doc()) })); };
   show();
   const edit = () => {
     const ta = h('textarea', { class: 'note-edit' }); ta.value = n.content;
     const title = h('input', { type: 'text', value: n.title, style: { width: '100%', marginBottom: '6px' } });
     body.innerHTML = ''; body.append(title, ta, h('div', { class: 'modal-foot' }, h('button', { class: 'btn primary', onclick: async () => { n.content = ta.value; n.title = title.value; await db.put('notes', n); renderNotes(); show(); } }, 'Save')));
   };
-  const name = safeName(n.title);
+    const name = safeName(n.title);
   modal(n.title, h('div', {}, h('div', { class: 'tp-btns', style: { marginBottom: '8px' } },
     h('button', { class: 'btn small', onclick: edit }, '✎ Edit'),
-    h('button', { class: 'btn small', onclick: () => saveBlob(markdownToDocx(withRefs(n), n.title), `${name}.docx`) }, '⤓ Word'),
-    h('button', { class: 'btn small', onclick: () => saveText(withRefs(n), `${name}.md`, 'text/markdown') }, '⤓ Markdown'),
-    h('button', { class: 'btn small', onclick: () => navigator.clipboard.writeText(withRefs(n)).then(() => toast('Copied')) }, '📋 Copy'),
+    h('button', { class: 'btn small primary export-btn', title: 'Word, Excel, CSV, Markdown, HTML or PDF', onclick: e => exportMenu(e.currentTarget, doc()) }, '⤓ Export ▾'),
+    h('button', { class: 'btn small', onclick: () => saveBlob(markdownToDocx(withRefs(doc()), n.title), `${name}.docx`) }, '⤓ Word'),
+    ...(extractTables(n.content).length ? [h('button', { class: 'btn small', title: 'Every table in this report as a sheet, plus the cited sources', onclick: () => exportXlsx(doc()) }, '⤓ Excel')] : []),
     h('button', { class: 'btn small', title: 'Use this note as a source for further questions', onclick: async () => { closeModal(); await addTextSource(n.title, n.content, 'note', 'draft'); } }, '→ Add as source'),
     h('button', { class: 'btn small danger', onclick: async () => { if (!confirm('Delete this note?')) return; await db.del('notes', n.id); S.notes = S.notes.filter(x => x !== n); renderNotes(); closeModal(); } }, '🗑 Delete')), body));
 }
-// Exported notes keep their citations readable outside the app: [n] → list of sources + locations
-function withRefs(n) {
-  const used = [...new Set([...n.content.matchAll(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g)].flatMap(m => m[1].match(/\d+/g).map(Number)))].sort((a, b) => a - b);
-  const c = n.meta?.cites || {};
-  const refs = used.filter(i => c[i]).map(i => `[${i}] ${c[i].source}, ${c[i].loc}`);
-  const web = (n.meta?.web?.citations || []).map((w, i) => `[W${i + 1}] ${w.title} — ${w.url}`);
-  return n.content + (refs.length || web.length ? `\n\n---\n**Sources cited**\n\n${[...refs, ...web].map(r => '- ' + r).join('\n')}\n` : '');
+// Exported reports keep their citations readable outside the app: [n] → list of sources + locations
+const citedNumbers = content => [...new Set([...String(content).matchAll(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g)].flatMap(m => m[1].match(/\d+/g).map(Number)))].sort((a, b) => a - b);
+function withRefs(d) {
+  const c = d.cites || {}, content = String(d.content).replace(/```thistle-plot[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
+  const refs = citedNumbers(content).filter(i => c[i]).map(i => `[${i}] ${c[i].source}, ${c[i].loc}`);
+  const web = (d.web?.citations || []).map((w, i) => `[W${i + 1}] ${w.title} — ${w.url}`);
+  return content + (refs.length || web.length ? `\n\n---\n**Sources cited**\n\n${[...refs, ...web].map(r => '- ' + r).join('\n')}\n` : '');
+}
+function sourcesSheet(d) {
+  const c = d.cites || {}, rows = citedNumbers(d.content).filter(i => c[i]).map(i => [`[${i}]`, c[i].source, c[i].loc, c[i].text.replace(/\s+/g, ' ').slice(0, 500)]);
+  (d.web?.citations || []).forEach((w, i) => rows.push([`[W${i + 1}]`, w.title, w.url, '']));
+  return rows.length ? [{ title: 'Sources cited', header: ['Citation', 'Source', 'Location', 'Passage (start)'], rows }] : [];
+}
+
+// ---------------- exports ----------------
+function exportXlsx(d, only = null) {
+  const tables = extractTables(d.content), pick = only == null ? tables : [tables[only]];
+  if (!pick.length) return toast('This report has no tables', true);
+  saveBlob(tablesToXlsx(pick, sourcesSheet(d)), `${safeName(only == null ? d.title : pick[0].title)}.xlsx`);
+}
+function exportCsv(d, i) { const t = extractTables(d.content)[i]; saveText(tableToCsv(t), `${safeName(t.title)}.csv`, 'text/csv'); }
+async function copyTable(d, i) {
+  const t = extractTables(d.content)[i], tsv = tableToTsv(t);
+  const html = `<table>${[t.header, ...t.rows].map((r, k) => `<tr>${r.map(c => `<${k ? 'td' : 'th'}>${esc(c)}</${k ? 'td' : 'th'}>`).join('')}</tr>`).join('')}</table>`;
+  try { await navigator.clipboard.write([new ClipboardItem({ 'text/plain': new Blob([tsv], { type: 'text/plain' }), 'text/html': new Blob([html], { type: 'text/html' }) })]); }
+  catch { await navigator.clipboard.writeText(tsv); }
+  toast('Table copied: paste into Excel or Word');
+}
+function htmlReport(d) { return reportHtml(d.title, markdownToHtml(withRefs(d))); }
+function printReport(d) {
+  const url = URL.createObjectURL(new Blob([htmlReport(d)], { type: 'text/html' })), w = window.open(url, '_blank');
+  if (!w) { toast('Pop-up blocked: use ⤓ HTML and print from the browser', true); return; }
+  w.addEventListener('load', () => { w.focus(); w.print(); }); setTimeout(() => URL.revokeObjectURL(url), 120000);
+}
+// Small bar under each table: Excel / CSV / Copy
+const tableTools = d => i => h('div', { class: 'table-tools' },
+  h('button', { class: 'btn small', title: 'This table as an Excel workbook (with the cited sources)', onclick: () => exportXlsx(d, i) }, '⤓ Excel'),
+  h('button', { class: 'btn small', title: 'This table as CSV', onclick: () => exportCsv(d, i) }, '⤓ CSV'),
+  h('button', { class: 'btn small', title: 'Copy as a table you can paste into Excel or Word', onclick: () => copyTable(d, i) }, '📋 Copy table'));
+function exportMenu(anchor, d) {
+  const tables = extractTables(d.content), name = safeName(d.title), p = $('#popover');
+  const item = (label, hint, fn) => h('button', { class: 'menu-item', onclick: () => { p.hidden = true; fn(); } }, h('span', {}, label), h('small', {}, hint));
+  p.innerHTML = '';
+  p.append(h('div', { class: 'menu' },
+    h('div', { class: 'menu-head' }, `Export “${d.title.slice(0, 50)}”`),
+    item('📝 Word (.docx)', 'Formatted report; wide tables on landscape pages', () => saveBlob(markdownToDocx(withRefs(d), d.title), `${name}.docx`)),
+    tables.length ? item(`📊 Excel (.xlsx)`, `${tables.length} table${tables.length > 1 ? 's' : ''} as sheets + cited sources`, () => exportXlsx(d)) : null,
+    ...tables.map((t, i) => item(`🧾 CSV: ${t.title.slice(0, 40)}`, `${t.rows.length} rows × ${t.header.length} columns`, () => exportCsv(d, i))),
+    item('⬇ Markdown (.md)', 'Plain text with headings and tables', () => saveText(withRefs(d), `${name}.md`, 'text/markdown')),
+    item('🌐 HTML page (.html)', 'Opens in any browser; easy to share', () => saveText(htmlReport(d), `${name}.html`, 'text/html')),
+    item('🖨 Print / save as PDF', 'Opens the print dialog (A4 landscape)', () => printReport(d)),
+    item('📋 Copy as Markdown', 'For pasting into other tools', () => navigator.clipboard.writeText(withRefs(d)).then(() => toast('Copied'))),
+  ));
+  p.hidden = false;
+  const r = anchor.getBoundingClientRect();
+  p.style.left = Math.max(8, Math.min(r.left, innerWidth - p.offsetWidth - 10)) + 'px';
+  p.style.top = (r.bottom + 6 + p.offsetHeight > innerHeight ? Math.max(8, r.top - p.offsetHeight - 6) : r.bottom + 6) + 'px';
 }
 
 // ---------------- Thistle apps drawer ----------------
@@ -647,6 +700,9 @@ PDF (scanned pages are read by a vision model), Word, PowerPoint, Excel/CSV, tex
 - **Scientific writing**: abstracts, lay summaries, introductions, discussions, rewrites — choose the **Audience** (lay public, scientists, field experts).
 
 ### Statistics with Thistle Plot and Thistle Flow
+Reports, notes and answers export to Word, Excel, CSV, Markdown, HTML or PDF (⤓ Export); each table also has its own Excel/CSV/copy buttons.
+
+### Statistics
 The AI never calculates p-values. It writes an analysis request (test + which columns), the app builds Thistle Plot's table **from your original file**, Thistle Plot runs the test here in the browser, and the results go back to the AI for interpretation. Each card can **⤓ .tplot** (open in Thistle Plot) or **👁 Open in Thistle Plot**.
 In **🔬 Thistle apps → Thistle Flow**, load FCS files and gate as usual, then **⬇ Add TF statistics as source** to analyse population statistics here.
 `), {});
@@ -704,7 +760,7 @@ async function init() {
   $('#btnTheme').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; localStorage.setItem('tn.theme', t); $('#btnTheme').textContent = t === 'dark' ? '🌙' : '☀️'; };
   $('#modalClose').onclick = closeModal;
   $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
-  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite')) $('#popover').hidden = true; });
+  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn')) $('#popover').hidden = true; });
   document.addEventListener('keydown', e => {
     if (e.key === 'F1' || ((e.metaKey || e.ctrlKey) && e.key === '/')) { e.preventDefault(); helpDialog(); }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTnote(); }
