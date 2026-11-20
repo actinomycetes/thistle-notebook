@@ -10,6 +10,9 @@ import { SEARCH_DBS, parseSuggestions, recentSince } from './search.js';
 import { renderMarkdown, markdownToDocx } from './md.js';
 import { extractTables, tableToCsv, tableToTsv, tablesToXlsx, reportHtml, markdownToHtml } from './export.js';
 import { parseSpecs, findTable, buildG, tplotFile, ThistlePlot, ThistleFlow, defaultSuiteUrl } from './thistle.js';
+// Set the title again from script (as Thistle Flow does): Orion 1.1 (WebKit) showed the favicon only on pages whose title
+// changed after loading; the static <title> alone gave the generic github.io icon (v0.5.1, checked with test pages).
+document.title = `Thistle Notebook v${APP_VERSION} (Beta)`;
 
 if (window.pdfjsLib) window.pdfjsLib.GlobalWorkerOptions.workerSrc = 'https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
 

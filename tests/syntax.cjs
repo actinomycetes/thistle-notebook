@@ -8,5 +8,7 @@ for (const f of fs.readdirSync(dir).filter(f => f.endsWith('.js'))) {
   catch (e) { bad++; console.log(`FAIL js/${f}: ${String(e.stderr).split('\n').filter(l => /SyntaxError|\.mjs:\d+/.test(l)).join(' ')}`); }
 }
 fs.rmSync(tmp, { recursive: true });
+// the favicon needs the title to be set from script (Orion 1.1); keep this line in js/app.js
+if (!/document\.title = `Thistle Notebook v\$\{APP_VERSION\} \(Beta\)`/.test(fs.readFileSync(path.join(dir, 'app.js'), 'utf8'))) { bad++; console.log('FAIL js/app.js no longer sets document.title (the favicon needs it in Orion)'); }
 console.log(bad ? `${bad} module(s) with syntax errors` : 'PASS all modules parse as ES modules');
 process.exit(bad ? 1 : 0);

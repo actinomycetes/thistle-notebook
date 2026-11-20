@@ -33,7 +33,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
 - Other Thistle files opened as a notebook get a plain message (`identifyFile` in `js/store.js`); `.tplot` and `.tflow`
   can be added as sources instead.
 - Favicon written as `<link rel="icon" href="data:image/svg+xml,...">` with every character escaped, no `type`
-  attribute (Safari/iPad). iPad: drop `accept` on file inputs (`IS_IOS`).
+  attribute (Safari/iPad), and `document.title` set again from script in `js/app.js` (Orion 1.1 showed the icon only then,
+  as in Thistle Flow; v0.5.1). iPad: drop `accept` on file inputs (`IS_IOS`).
 
 ## Architecture map
 - `js/elm.js` ELM client (`classify` model metadata, streaming SSE chat, embeddings, web search over several routes
