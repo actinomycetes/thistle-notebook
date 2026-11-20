@@ -59,6 +59,13 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   links in `S.files` (browsers cannot keep paths), `findFilesDialog` matches by name, `changedOnDisk` compares SHA-256.
   Dirty state: `nb.updated > nb.savedAt` (`saveTnote` sets `savedAt`; imported files count as saved).
 - Format history: 1 = v0.1–0.3; 2 = v0.4 (tabs, file fingerprints). Format-1 files open (tabs created on open).
+- Statistical review fixes (v0.5.0, `tests/review.e2e.cjs`, SciPy/statsmodels references in comments): `findTable` matches a
+  named dataset exactly or by name without extension, never by substring or by being the only one (`spec._dataset`,
+  `spec._datasetNote` when none was named); long-layout paired tests (`PAIRED_TESTS`) require `subject`, and repeated
+  subject × group values are averaged (one value per subject); the bridge sets both `opt-nA` and `opt-nB` for anova2,
+  applies "Comparisons" before other options, sets "vs control" when Dunnett is requested with a control, throws when a
+  known option's choice is missing or disabled, and throws when TP's newest tab is an error (no `scard`); TF statistics
+  are read with `readStatsTable` from `data-v` (full precision, blank = null).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

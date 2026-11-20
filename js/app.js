@@ -706,13 +706,13 @@ function tpCard(m, k) {
   if (!parsed.ok) { card.append(h('div', { class: 'err-box' }, parsed.error), h('pre', {}, parsed.raw)); return card; }
   const spec = parsed.spec, res = m.meta?.tp?.[k];
   const testName = TP_TESTS[spec.test]?.[0] || spec.test;
+  let built = null, buildErr = null;
+  try { const { table } = findTable(spec, datasetsNow()); built = buildG({ ...spec }, table); } catch (e) { buildErr = e.message; }
   card.append(h('div', { class: 'tp-title' }, '📊 ', spec.title || testName,
     res ? h('span', { class: 'status ' + (res.status === 'ok' ? 'ok' : 'err') }, res.status === 'ok' ? 'run in Thistle Plot' : 'failed') : h('span', { class: 'status' }, 'proposed')),
-  h('div', { class: 'tp-meta' }, `${testName} · ${spec.dataset || '?'}${spec.sheet ? ' [' + spec.sheet + ']' : ''} · ${describeSpec(spec)}`),
+  h('div', { class: 'tp-meta' }, `${testName} · ${spec._dataset || spec.dataset || '?'}${spec.sheet ? ' [' + spec.sheet + ']' : ''} · ${describeSpec(spec)}`),
   spec.why ? h('div', {}, '💡 ', spec.why) : null);
-  let built = null;
-  try { const { table } = findTable(spec, datasetsNow()); built = buildG({ ...spec }, table); }
-  catch (e) { card.append(h('div', { class: 'err-box' }, e.message)); }
+  if (buildErr) card.append(h('div', { class: 'err-box' }, buildErr));
   if (built) {
     const G = built.G;
     card.append(h('div', { class: 'preview hint' }, `Table for Thistle Plot: ${G.groups.length} column group(s) × ${G.nRows} row(s)${G.nReps > 1 ? ` × ${G.nReps} replicates` : ''} — `,

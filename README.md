@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.4.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.5.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -121,6 +121,10 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   **⤓ .tplot** (open it in Thistle Plot) and **👁 Open in Thistle Plot**. Supported: descriptive, normality, t-tests,
   one-/two-way ANOVA, Mann–Whitney, Wilcoxon, Kruskal–Wallis, KS, correlation, regression, dose–response, Fisher,
   chi-square, Kaplan–Meier, p-value adjustment, volcano, PCA, heatmap and Rank Product.
+- **Checks on each analysis (v0.5.0):** a dataset named in the request must be loaded (it is never swapped for another
+  file); a paired test needs a subject column, and repeated measurements of one subject are averaged so each subject
+  counts once; a two-way design sets both factor sizes; Dunnett with a control runs "vs control"; an option TP does not
+  offer for the design, or a TP error, fails the analysis instead of being shown as a result.
 - **Thistle Flow**: in 🔬 Thistle apps → Thistle Flow, load FCS files and gate as usual, then **⬇ Add TF statistics as
   source**. The population statistics become a dataset the assistant can analyse and send on to Thistle Plot. `.tflow`
   files can also be added as sources (gating hierarchy and samples).
@@ -153,7 +157,7 @@ exports (file structure checked),
 resizable panes and closing notebooks. `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.4.0
+## Known limitations of v0.5.0
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional
@@ -162,4 +166,4 @@ Fisher, Pearson, ANOVA).
 - Browsers cannot remember where files are on disk: links made with 📂 Find files last until the page is closed.
 - One request may not exceed ELM's 10 MiB limit; very large source sets are searched rather than sent whole.
 - Scanned PDFs: the first 60 scanned pages are read. Excel dates appear as serial numbers. No web-page import (by design).
-- The Thistle Flow import reads TF's Statistics table, so set up the statistics columns you need in TF first.
+- The Thistle Flow import reads TF's Statistics table, so set up the statistics columns you need in TF first. Values are read at full precision (TF v0.21+); a blank cell (gate not measurable in that sample) stays missing, never 0.

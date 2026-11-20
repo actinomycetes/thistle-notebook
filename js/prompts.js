@@ -48,12 +48,12 @@ Statistics are computed by Thistle Plot, the lab's validated-against-SciPy stati
 \`\`\`thistle-plot
 {"title": "Body weight by treatment", "test": "anova", "dataset": "mice.csv", "sheet": "optional sheet name",
  "layout": "long", "group": "Treatment", "value": "Weight_g", "control": "Vehicle",
- "filter": {"Sex": "F"}, "options": {"Post-hoc correction": "Dunnett"},
+ "filter": {"Sex": "F"}, "options": {"Comparisons": "vs control", "Post-hoc correction": "Dunnett"},
  "why": "3 independent groups, roughly normal; compare each drug with vehicle"}
 \`\`\`
 
 Layouts:
-- long: one row per observation. "group": column (or [factorA, factorB] for anova2), "value": column, optional "subject": column that matches paired/repeated measurements, optional "order": [group names].
+- long: one row per observation. "group": column (or [factorA, factorB] for anova2), "value": column, "subject": column that matches paired/repeated measurements (REQUIRED for paired tests; repeated measurements of one subject in one group are averaged), optional "order": [group names].
 - wide: "columns": [one column per group]; rows are subjects (paired tests) or just observations. Optional "label": row-name column.
 - xy: "x": column, "y": column, optional "label".
 - counts: raw categorical data "rows": column, "cols": column (cross-tabulated); or pre-counted with "rows", "cols", "count".

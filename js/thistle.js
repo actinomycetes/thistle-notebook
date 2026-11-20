@@ -16,12 +16,19 @@ export function parseSpecs(text) {
 }
 
 const norm = s => String(s ?? '').trim().toLowerCase();
+const PAIRED_TESTS = ['ttest_rel', 'wilcoxon'];
 
+// The dataset a spec names: the exact file name, or the name without its extension ("mice" → "mice.csv"); never a
+// partial match, and never a different file just because it is the only one loaded (v0.5.0: "different.csv" ran on
+// "actual.csv"). With no dataset named and one loaded, that one is used and named in the notes (spec._datasetNote).
 export function findTable(spec, datasets) {
-  const want = norm(spec.dataset);
-  const ds = datasets.find(d => norm(d.name) === want) || datasets.find(d => want && norm(d.name).includes(want)) ||
-    datasets.find(d => want && want.includes(norm(d.name).replace(/\.\w+$/, ''))) || (datasets.length === 1 ? datasets[0] : null);
-  if (!ds) throw new Error(`Dataset "${spec.dataset}" not found. Available: ${datasets.map(d => d.name).join(', ') || 'none'}.`);
+  const want = norm(spec.dataset), stem = n => norm(n).replace(/\.\w+$/, '');
+  let ds = null;
+  if (want) ds = datasets.find(d => norm(d.name) === want) || datasets.find(d => stem(d.name) === stem(want)) || null;
+  else if (datasets.length === 1) { ds = datasets[0]; spec._datasetNote = `Data: ${ds.name} (the only dataset loaded; no dataset was named).`; }
+  if (!ds) throw new Error(want ? `Dataset "${spec.dataset}" is not loaded. Available: ${datasets.map(d => d.name).join(', ') || 'none'}.`
+    : `Name the dataset to use ("dataset"). Available: ${datasets.map(d => d.name).join(', ') || 'none'}.`);
+  spec._dataset = ds.name;
   if (!ds.tables) throw new Error(`"${ds.name}" is too large to keep as a table in the browser; split it or open it directly in Thistle Plot.`);
   const sheets = Object.keys(ds.tables);
   const sheet = spec.sheet ? sheets.find(s => norm(s) === norm(spec.sheet)) : sheets[0];
@@ -53,11 +60,12 @@ export function buildG(spec, table) {
   const putFirst = (names, ctrl) => { if (ctrl == null) return names; const i = names.findIndex(n => norm(n) === norm(ctrl)); if (i < 0) throw new Error(`Control group "${ctrl}" not found. Groups: ${names.join(', ')}.`); return [names[i], ...names.filter((_, k) => k !== i)]; };
   const layout = spec.layout || (spec.columns ? 'wide' : spec.x ? 'xy' : spec.time ? 'survival' : spec.groups ? 'matrix' : spec.rows ? 'counts' : 'long');
   const G = { nReps: 1, nRows: 0, rowNames: [], groups: [] };
-  const notes = [];
+  const notes = spec._datasetNote ? [spec._datasetNote] : [];
 
   if (layout === 'long') {
     const gcols = [].concat(spec.group).map(ci), vi = ci(spec.value), si = spec.subject ? ci(spec.subject) : -1;
     if (!gcols.length || gcols[0] < 0) throw new Error('"group" column is required for the long layout.');
+    if (PAIRED_TESTS.includes(spec.test) && si < 0) throw new Error('A paired test in the long layout needs a "subject" column that says which measurements belong to the same subject (animal, patient, experiment). Without it the rows would be paired by their order in the file.');
     const key = r => gcols.map(i => r[i] == null ? null : String(r[i]));
     let names;
     if (gcols.length === 2) { // two-way: A-major order, as Thistle Plot's two-way ANOVA expects
@@ -72,10 +80,13 @@ export function buildG(spec, table) {
       const subjects = levels(si);
       const cellVals = new Map();
       valid.forEach(r => { const k = String(r[si]) + '\u0000' + gname(r); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
-      const nReps = Math.max(1, ...[...cellVals.values()].map(v => v.length));
-      G.nReps = nReps; G.rowNames = subjects; G.nRows = subjects.length;
-      G.groups = names.map(n => ({ name: n, reps: Array.from({ length: nReps }, (_, k) => nReps === 1 ? 'Value' : `Rep${k + 1}`),
-        data: subjects.map(s => Array.from({ length: nReps }, (_, k) => cellVals.get(String(s) + '\u0000' + n)?.[k] ?? '')) }));
+      // One value per subject and group: repeated (technical) measurements are averaged, so the subject stays the unit
+      // of analysis (v0.5.0: repeats became extra pairs and inflated n and the degrees of freedom).
+      const repeated = [...cellVals.values()].filter(v => v.length > 1).length;
+      if (repeated) notes.push(`${repeated} subject × group cell(s) had repeated measurements; they were averaged, so each subject counts once.`);
+      G.nReps = 1; G.rowNames = subjects; G.nRows = subjects.length;
+      G.groups = names.map(n => ({ name: n, reps: ['Value'],
+        data: subjects.map(s => { const v = cellVals.get(String(s) + '\u0000' + n); return [v?.length ? v.reduce((a, x) => a + x, 0) / v.length : '']; }) }));
     } else {
       const byG = names.map(n => valid.filter(r => gname(r) === n).map(r => num(r[vi])));
       const n = Math.max(...byG.map(v => v.length));
@@ -192,25 +203,36 @@ export class ThistlePlot extends ThistleApp {
     if (![...asel.options].some(o => o.value === spec.test)) throw new Error(`Thistle Plot has no test "${spec.test}".`);
     asel.value = spec.test; asel.dispatchEvent(new Event('change')); await sleep(80);
     const applied = [], unknown = [];
+    // true when set; otherwise why not ('missing' choice, or 'disabled' by Thistle Plot for this design)
     const setEl = (el, v) => {
       if (el.type === 'checkbox') el.checked = !!v && !/^(false|no|off|0)$/i.test(String(v));
       else if (el.tagName === 'SELECT') {
         const o = [...el.options].find(o => norm(o.value) === norm(v)) || [...el.options].find(o => norm(o.textContent).includes(norm(v)));
-        if (!o) return false; el.value = o.value;
+        if (!o) return 'missing'; if (o.disabled) return 'disabled'; el.value = o.value;
       } else el.value = v;
       el.dispatchEvent(new Event('change', { bubbles: true })); el.dispatchEvent(new Event('input', { bubbles: true }));
       return true;
     };
     const opts = { ...(spec.options || {}) };
-    if (spec.test === 'anova2' && spec._nA) {
-      const el = doc.getElementById('opt-nA');
-      if (el) { setEl(el, spec._nA); applied.push(`Factor A levels (nA) = ${spec._nA}`); await sleep(30); }
+    if (spec.test === 'anova2') for (const [id, v, lab] of [['opt-nA', spec._nA, 'Factor A levels (nA)'], ['opt-nB', spec._nB, 'Factor B levels (nB)']]) {
+      const el = v && doc.getElementById(id);
+      if (el) { setEl(el, v); applied.push(`${lab} = ${v}`); await sleep(30); }
     }
-    for (const [label, v] of Object.entries(opts)) {
-      if (label.startsWith('__')) continue;
+    const isCmp = l => /comparison/i.test(l) && !/correction/i.test(l);
+    // Dunnett compares each group with ONE control: with a control named and no Comparisons given, ask for "vs control"
+    if (spec.test === 'anova' && spec.control != null && Object.values(opts).some(v => /dunnett/i.test(String(v))) && !Object.keys(opts).some(isCmp)) {
+      const el = doc.getElementById('opt-cmp');
+      if (el && setEl(el, 'ctrl') === true) { applied.push('Comparisons = vs control (Dunnett compares each group with one control)'); await sleep(30); }
+    }
+    const order = Object.entries(opts).filter(([l]) => !l.startsWith('__')).sort(([a], [b]) => (isCmp(b) ? 1 : 0) - (isCmp(a) ? 1 : 0));
+    for (const [label, v] of order) {
       const found = ThistlePlot.readOptions(doc).find(o => norm(o.label).includes(norm(label)) || norm(o.id) === norm(label));
       const el = found && doc.getElementById(found.id);
-      if (el && setEl(el, v)) { applied.push(`${found.label} = ${v}`); await sleep(30); } else unknown.push(`${label} = ${v}`);
+      if (!el) { unknown.push(`${label} = ${v}`); continue; }
+      const res = setEl(el, v);
+      if (res === true) { applied.push(`${found.label} = ${v}`); await sleep(30); continue; }
+      const choices = el.tagName === 'SELECT' ? [...el.options].filter(o => !o.disabled).map(o => o.textContent.trim()).join(' | ') : '';
+      throw new Error(`Thistle Plot cannot use ${found.label} = ${v}: ${res === 'disabled' ? 'that choice is not available for this design' : 'there is no such choice'}${choices ? `. Available now: ${choices}` : ''}.`);
     }
     const nBefore = w.eval('statTabs.length'), pBefore = w.eval('plotTabs.length');
     w.runAnalysis();
@@ -218,6 +240,9 @@ export class ThistlePlot extends ThistleApp {
     const stats = w.eval('statTabs'), plots = w.eval('plotTabs');
     if (stats.length === nBefore) throw new Error('Thistle Plot did not produce a result' + (this.alerts.length ? ': ' + this.alerts.join(' ') : '.'));
     const tab = stats[stats.length - 1];
+    // Thistle Plot reports a problem as a result tab with only an error box (or a tab titled "Error"): that is a failure
+    if (tab.title === 'Error' || (!/class="scard"/.test(tab.html) && /class="ebox"/.test(tab.html)))
+      throw new Error('Thistle Plot could not run this analysis: ' + htmlToText(tab.html).trim());
     let plot = null;
     if (plots.length > pBefore) {
       const p = plots[plots.length - 1];
@@ -251,10 +276,21 @@ export class ThistleFlow extends ThistleApp {
   async statistics() {
     const w = await this.ready(), doc = w.document;
     doc.querySelector('.tabs button[data-tab="stats"]').click(); await sleep(300);
-    const t = doc.getElementById('statsTable');
-    const rows = [...t.querySelectorAll('tr')].map(tr => [...tr.children].map(c => c.textContent.trim()));
-    if (rows.length < 2) throw new Error('Thistle Flow has no statistics yet: load FCS files and draw gates in the Thistle Flow panel first.');
-    const typed = v => v === '' ? null : isFinite(+v.replace(/,/g, '')) ? +v.replace(/,/g, '') : v;
-    return { columns: rows[0].map((c, i) => c || (i ? `col${i + 1}` : 'Sample')), rows: rows.slice(1).map(r => r.map(typed)), workspace: w.thistleFlow.ws?.name || 'Thistle Flow' };
+    const out = readStatsTable(doc.getElementById('statsTable'));
+    if (!out.rows.length) throw new Error('Thistle Flow has no statistics yet: load FCS files and draw gates in the Thistle Flow panel first.');
+    return { ...out, workspace: w.thistleFlow.ws?.name || 'Thistle Flow' };
   }
+}
+
+// Thistle Flow's Statistics table as typed rows. Since TF v0.21.0 every value cell carries its exact number in data-v
+// (the text is rounded for reading, e.g. 0.003 % shown as 0.00 before); a blank means "not measured" and stays null.
+export function readStatsTable(t) {
+  const rows = t ? [...t.querySelectorAll('tr')].map(tr => [...tr.children]) : [];
+  const typed = c => {
+    const v = c.hasAttribute('data-v') ? c.getAttribute('data-v') : c.textContent.trim();
+    if (v === '') return null;
+    const n = +v.replace(/,/g, ''); return isFinite(n) ? n : v;
+  };
+  if (rows.length < 2) return { columns: rows[0]?.map(c => c.textContent.trim()) || [], rows: [] };
+  return { columns: rows[0].map((c, i) => c.textContent.trim() || (i ? `col${i + 1}` : 'Sample')), rows: rows.slice(1).map(r => r.map(typed)) };
 }
