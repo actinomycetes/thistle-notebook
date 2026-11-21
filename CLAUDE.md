@@ -85,7 +85,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   an empty intersection throws. Column names and
   control groups use `pickName` (exact name first; case-insensitive only when unique, else throw). Long-layout observations
   are assigned by level tuple (`cellOf`, cell index), never by the joined display name (labels are bracketed if two would
-  read the same); `levels()` refuses a level repeated in order / orderA / orderB / orderRows.
+  read the same); `levels()` refuses a level repeated in order / orderA / orderB / orderRows. Wide `columns` and matrix
+  `groups` refuse a column (resolved index) listed twice; rows without a subject ID never enter the per-subject cells.
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

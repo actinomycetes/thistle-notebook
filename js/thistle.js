@@ -144,10 +144,11 @@ export function buildG(spec, table) {
     const valid = rows.filter(r => gidx(r) != null && num(r[vi]) != null);
     if (si >= 0) {
       const subjects = levels(si);
-      const noId = valid.filter(r => cat(r, si) == null || String(cat(r, si)).trim() === '').length;
+      const hasId = r => cat(r, si) != null && String(cat(r, si)).trim() !== '';
+      const noId = valid.filter(r => !hasId(r)).length;
       if (noId) notes.push(`${noId} row(s) with no subject ID were left out.`);
-      const cellVals = new Map();
-      valid.forEach(r => { const k = JSON.stringify([String(cat(r, si)), gidx(r)]); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
+      const cellVals = new Map(); // rows without an ID are left out here, so they never count as repeated measurements
+      valid.filter(hasId).forEach(r => { const k = JSON.stringify([String(cat(r, si)), gidx(r)]); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
       // One value per subject and group: repeated (technical) measurements are averaged, so the subject stays the unit
       // of analysis (v0.5.0: repeats became extra pairs and inflated n and the degrees of freedom).
       const repeated = [...cellVals.values()].filter(v => v.length > 1).length;
@@ -165,6 +166,8 @@ export function buildG(spec, table) {
   } else if (layout === 'wide' || layout === 'single') {
     let cs = [].concat(spec.columns || []).map(ci);
     if (!cs.length) throw new Error('"columns" is required for the wide layout.');
+    // the same column twice (exactly, or Control / control resolving to one header) would be tested against itself
+    { const d = cs.find((c, j) => cs.indexOf(c) !== j); if (d !== undefined) throw new Error(`Column "${cols[d]}" is listed more than once in "columns" (v0.6.1).`); }
     if (spec.control != null) { const k = pickName(cs.map(i => cols[i]), spec.control, 'Control');
       if (k < 0) throw new Error(`Control "${spec.control}" is not one of the columns: ${cs.map(i => cols[i]).join(', ')}.`); // v0.6.0: was ignored
       if (k > 0) cs = [cs[k], ...cs.filter((_, j) => j !== k)]; }
@@ -209,6 +212,8 @@ export function buildG(spec, table) {
     if (!entries.length) throw new Error('"groups" ({name: [replicate columns]}) is required for the matrix layout.');
     const nReps = Math.max(...entries.map(([, c]) => c.length));
     const idx = entries.map(([n, c]) => [n, c.map(ci)]);
+    { const all = idx.flatMap(([, is]) => is), d = all.find((c, j) => all.indexOf(c) !== j);
+      if (d !== undefined) throw new Error(`Column "${cols[d]}" is listed more than once in "groups" (v0.6.1).`); }
     G.nRows = rows.length; G.rowNames = rows.map((r, k) => String(cat(r, li) ?? `Feature ${k + 1}`));
     if (['pca', 'heatmap'].includes(spec.test)) { // Thistle Plot treats each column group as one sample here
       G.nReps = 1;

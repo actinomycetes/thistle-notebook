@@ -253,6 +253,25 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(/"order"/.test(ord.one || '') && /"A"/.test(ord.one || ''), 'a repeated level in "order" is refused, naming the field and level: ' + ord.one);
   ok(/"orderB"/.test(ord.two || '') && /"v"/.test(ord.two || ''), 'a repeated level in "orderB" is refused: ' + ord.two);
   ok(JSON.stringify(ord.partial) === '["B","A"]', 'a valid partial order puts B first and adds A once ' + JSON.stringify(ord.partial));
+  // independent review: a column requested twice in the wide layout is refused; missing IDs do not count as repeats
+  const wd = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const t = { columns: ['Control', 'Drug'], rows: [[1, 5], [2, 7], [3, 9]] };
+    const t2 = { columns: ['Control', 'control', 'Drug'], rows: [[1, 10, 5], [2, 20, 7], [3, 30, 9]] };
+    const err = f => { try { f(); return null; } catch (e) { return e.message; } };
+    const ids = rows => buildG({ test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' }, { columns: ['ID', 'Cond', 'Y'], rows }).notes;
+    return {
+      exact: err(() => buildG({ layout: 'wide', columns: ['Control', 'Control', 'Drug'] }, t)),
+      cased: err(() => buildG({ layout: 'wide', columns: ['Control', 'control', 'Drug'] }, t)),
+      distinct: buildG({ layout: 'wide', columns: ['Control', 'control', 'Drug'] }, t2).G.groups.map(g => [g.name, g.data.map(x => x[0])]),
+      noId: ids([['P', 'A', 1], ['P', 'B', 2], [null, 'A', 4], [null, 'A', 8]]),
+      rep: ids([['P', 'A', 1], ['P', 'A', 3], ['P', 'B', 2], [null, 'A', 4]]) };
+  });
+  ok(/Control/.test(wd.exact || '') && /more than once/.test(wd.exact || ''), 'wide: an exactly repeated column is refused: ' + wd.exact);
+  ok(/Control/.test(wd.cased || '') && /more than once/.test(wd.cased || ''), 'wide: "Control" and "control" naming the same column are refused: ' + wd.cased);
+  ok(JSON.stringify(wd.distinct) === '[["Control",[1,2,3]],["control",[10,20,30]],["Drug",[5,7,9]]]', 'wide: two different columns Control and control are both used ' + JSON.stringify(wd.distinct));
+  ok(wd.noId.some(n => /2 row.*no subject/.test(n)) && !wd.noId.some(n => /averag/.test(n)), 'rows without an ID give only the missing-ID note, no averaging note ' + JSON.stringify(wd.noId));
+  ok(wd.rep.some(n => /1 subject × group cell.*averag/.test(n)), 'a real repeat for P still gives the averaging note ' + JSON.stringify(wd.rep));
   // the same rule for column names and control groups
   r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
     [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
