@@ -154,11 +154,38 @@ function typed(v) {
   const n = Number(s.replace(/,(?=\d{3}\b)/g, ''));
   return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
 }
+// Keeps the spelling of cells whose typed value would change it (1e3 → 1000), so category columns (subjects, groups)
+// can use the original text (buildG). Missing-value markers (NA, n/a, -) stay missing. In columns that look like
+// measurements (most filled cells are decimals) only spellings that would otherwise collide are kept: two different
+// texts that read as the same number (1.1 and 1.10) would merge two subjects or groups. Formatting that changes nothing
+// (12.300 alone) is not stored, so large tables and saved notebooks do not grow (v0.6.1).
+const MISSING = /^(na|n\/a|nan|null|none|-)$/i;
+function importTable(columns, sourceRows) {
+  const originalText = [];
+  const decimalCol = columns.map((_, c) => {
+    let filled = 0, dec = 0;
+    for (const row of sourceRows) { const t = row[c] == null ? '' : String(row[c]).trim(); if (!t || MISSING.test(t)) continue; filled++; if (/^[-+]?\d*\.\d+(e[-+]?\d+)?%?$/i.test(t)) dec++; }
+    return filled > 0 && dec / filled > 0.5;
+  });
+  const rows = sourceRows.map(row => columns.map((_, c) => typed(row[c])));
+  columns.forEach((_, c) => {
+    const differs = r => { const raw = sourceRows[r][c], v = rows[r][c]; return v !== null && typeof raw === 'string' && raw.trim() !== '' && raw.trim() !== String(v); };
+    let keep = () => true;
+    if (decimalCol[c]) { // keep only values written in more than one way in this column
+      const spellings = new Map();
+      rows.forEach((row, r) => { const v = row[c]; if (v === null) return; const t = String(sourceRows[r][c]).trim(); (spellings.get(v) || spellings.set(v, new Set()).get(v)).add(t); });
+      keep = r => spellings.get(rows[r][c]).size > 1;
+    }
+    for (let r = 0; r < rows.length; r++) if (differs(r) && keep(r)) originalText.push([r, c, String(sourceRows[r][c]).trim()]);
+  });
+  originalText.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  return originalText.length ? { columns, rows, originalText } : { columns, rows };
+}
 async function readCsv(file) {
   if (!window.Papa) throw new Error('CSV reader did not load (PapaParse from cdnjs).');
   const res = window.Papa.parse((await file.text()).replace(/^﻿/, ''), { skipEmptyLines: 'greedy' });
   const [head, ...rows] = res.data;
-  return { columns: head.map((c, i) => String(c).trim() || `col${i + 1}`), rows: rows.map(r => head.map((_, i) => typed(r[i]))) };
+  return importTable(head.map((c, i) => String(c).trim() || `col${i + 1}`), rows);
 }
 async function readXlsx(file) {
   const z = await unzip(await file.arrayBuffer()), P = s => new DOMParser().parseFromString(s, 'application/xml');
@@ -184,8 +211,7 @@ async function readXlsx(file) {
     const rows = Array.from(grid, r => r || []).filter(r => r.some(v => v != null && v !== ''));
     if (!rows.length) continue;
     const head = rows[0], n = Math.max(...rows.map(r => r.length));
-    out[sh.getAttribute('name')] = { columns: Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`),
-      rows: rows.slice(1).map(r => Array.from({ length: n }, (_, i) => typed(r[i]))) };
+    out[sh.getAttribute('name')] = importTable(Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows.slice(1));
   }
   return out;
 }

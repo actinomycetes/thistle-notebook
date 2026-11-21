@@ -16,6 +16,16 @@ export function parseSpecs(text) {
 }
 
 const norm = s => String(s ?? '').trim().toLowerCase();
+// Index of `want` in `names`: the exact (trimmed, case-sensitive) name first; otherwise a case-insensitive match only when
+// it is the only one ("ctrl" never picks "Ctrl" while a "ctrl" also exists). -1 = none; throws when two names differ
+// only in case and neither is exact (v0.6.1, independent review).
+function pickName(names, want, what) {
+  const w = String(want ?? '').trim(), exact = names.findIndex(n => String(n ?? '').trim() === w);
+  if (exact >= 0) return exact;
+  const loose = names.map((n, i) => norm(n) === norm(w) ? i : -1).filter(i => i >= 0);
+  if (loose.length > 1) throw new Error(`${what} "${want}" could mean ${loose.map(i => `"${names[i]}"`).join(' or ')}; write it exactly as in the file.`);
+  return loose.length ? loose[0] : -1;
+}
 const PAIRED_TESTS = ['ttest_rel', 'wilcoxon'];
 
 // The dataset a spec names: a name with an extension must match exactly ("actual.xlsx" never runs on "actual.csv",
@@ -26,7 +36,9 @@ export function findTable(spec, datasets) {
   const want = norm(spec.dataset), stem = n => norm(n).replace(/\.\w+$/, '');
   let ds = null;
   if (want) {
-    ds = datasets.find(d => norm(d.name) === want) || null;
+    const exact = datasets.filter(d => norm(d.name) === want);
+    if (exact.length > 1) throw new Error(`Multiple loaded datasets match "${spec.dataset}". Give them unique filenames before running this analysis.`);
+    ds = exact[0] || null;
     if (!ds && !/\.\w+$/.test(want)) {
       const hits = datasets.filter(d => stem(d.name) === want);
       if (hits.length > 1) throw new Error(`"${spec.dataset}" could mean ${hits.map(d => d.name).join(' or ')}; name the file with its extension.`);
@@ -48,24 +60,63 @@ export function buildG(spec, table) {
   const cols = table.columns;
   const ci = name => {
     if (name == null) return -1;
-    const i = cols.findIndex(c => norm(c) === norm(name));
+    const i = pickName(cols, name, 'Column');
     if (i < 0) throw new Error(`Column "${name}" not found. Columns: ${cols.join(', ')}.`);
     return i;
   };
   let rows = table.rows;
-  for (const [k, v] of Object.entries(spec.filter || {})) {
-    const i = ci(k), allowed = [].concat(v).map(norm);
-    rows = rows.filter(r => allowed.includes(norm(r[i])));
+  // Category reads (subjects, groups, filters, labels, count rows/columns) use cat(row, col): the spelling from the file
+  // where the importer kept one (1e3, 1.10), else the cell. Measurements always read the typed cell, so a value column
+  // that is also filtered, or named like the subject column in another case (id / ID), keeps "1,000" as 1000
+  // (v0.6.1, independent review: the spelling used to overwrite the cell and the pair was lost).
+  const orig = new Map();
+  for (const [r, c, value] of table.originalText || []) { const row = table.rows[r]; if (row) (orig.get(row) || orig.set(row, new Map()).get(row)).set(c, value); }
+  const cat = (row, c) => { const m = orig.get(row); return m && m.has(c) ? m.get(c) : row[c]; };
+  // Filter values (v0.6.1, independent review): a value selects the cells with exactly its text (trimmed, case-sensitive,
+  // because S1 and s1 are different subjects). Only when no cell has that text may it match ignoring case ("female" →
+  // "Female"), and then by number ("2.0" → the stored 2), each only if it finds a single spelling in the column; "1.10"
+  // never pulls in "1.1", and "S1" never pulls in "s1". Every value is resolved against its WHOLE column (not the rows left
+  // by another filter, which let {Site: South, ID: S1} pick s1); matches are combined within a column and intersected
+  // across columns. A value that matches nothing or two spellings stops the run, and so does an empty intersection.
+  const filters = Object.entries(spec.filter || {});
+  if (filters.length) {
+    const text = c => c == null ? null : String(c).trim(), problems = [], keep = [];
+    for (const [k, v] of filters) {
+      const i = ci(k), picks = new Set();
+      for (const w of [].concat(v).map(x => String(x).trim())) {
+        const exact = rows.filter(r => text(cat(r, i)) === w);
+        if (exact.length) { exact.forEach(r => picks.add(r)); continue; }
+        const n = w === '' ? NaN : Number(w);
+        let found = false;
+        for (const same of [r => text(cat(r, i)) != null && norm(cat(r, i)) === norm(w),               // ignoring case
+          r => Number.isFinite(n) && typeof r[i] === 'number' && r[i] === n]) {                             // by number (typed cell)
+          const hits = rows.filter(same), spellings = [...new Set(hits.map(r => text(cat(r, i))))];
+          if (spellings.length === 1) { hits.forEach(r => picks.add(r)); found = true; break; }
+          if (spellings.length > 1) { problems.push(`"${cols[i]}": "${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`); found = true; break; }
+        }
+        if (!found) problems.push(`"${cols[i]}": no rows with "${w}" (values present: ${[...new Set(rows.map(r => cat(r, i)).filter(x => x != null).map(String))].slice(0, 20).join(', ')})`);
+      }
+      keep.push(picks);
+    }
+    if (problems.length) throw new Error(`Filter: ${problems.join('; ')}. Use the values exactly as written in the file.`);
+    rows = rows.filter(r => keep.every(p => p.has(r)));
+    if (!rows.length) throw new Error(`Filter: no rows match all of ${filters.map(([k, v]) => `${k} = ${[].concat(v).join(' or ')}`).join(' and ')}.`);
   }
   if (!rows.length) throw new Error('No rows left after the filter.');
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);
   const cell = v => (num(v) ?? '');
-  const levels = (i, order) => {
-    const seen = []; rows.forEach(r => { const k = r[i] == null ? null : String(r[i]); if (k != null && !seen.includes(k)) seen.push(k); });
-    if (order) { const o = order.map(String); return [...o.filter(x => seen.includes(x)), ...seen.filter(x => !o.includes(x))]; }
+  // Levels of a category column in file order; `order` (field = its spec name) puts the listed levels first. A level
+  // listed twice is refused (v0.6.1, independent review: it duplicated a group with the same observations).
+  const levels = (i, order, field = 'order') => {
+    const seen = []; rows.forEach(r => { const v = cat(r, i), k = v == null ? null : String(v); if (k != null && !seen.includes(k)) seen.push(k); });
+    if (order) {
+      const o = [].concat(order).map(String), dup = o.find((x, j) => o.indexOf(x) !== j);
+      if (dup !== undefined) throw new Error(`"${field}" lists "${dup}" more than once; give each level once.`);
+      return [...o.filter(x => seen.includes(x)), ...seen.filter(x => !o.includes(x))];
+    }
     return seen;
   };
-  const putFirst = (names, ctrl) => { if (ctrl == null) return names; const i = names.findIndex(n => norm(n) === norm(ctrl)); if (i < 0) throw new Error(`Control group "${ctrl}" not found. Groups: ${names.join(', ')}.`); return [names[i], ...names.filter((_, k) => k !== i)]; };
+  const putFirst = (names, ctrl) => { if (ctrl == null) return names; const i = pickName(names, ctrl, 'Control group'); if (i < 0) throw new Error(`Control group "${ctrl}" not found. Groups: ${names.join(', ')}.`); return [names[i], ...names.filter((_, k) => k !== i)]; };
   const layout = spec.layout || (spec.columns ? 'wide' : spec.x ? 'xy' : spec.time ? 'survival' : spec.groups ? 'matrix' : spec.rows ? 'counts' : 'long');
   const G = { nReps: 1, nRows: 0, rowNames: [], groups: [] };
   const notes = spec._datasetNote ? [spec._datasetNote] : [];
@@ -75,31 +126,38 @@ export function buildG(spec, table) {
     if (!gcols.length || gcols[0] < 0) throw new Error('"group" column is required for the long layout.');
     if (spec.test === 'anova2' && gcols.length !== 2) throw new Error('A two-way ANOVA in the long layout needs two factor columns in "group" (for example ["Genotype", "Treatment"]), so that the design comes from the data.');
     if (PAIRED_TESTS.includes(spec.test) && si < 0) throw new Error('A paired test in the long layout needs a "subject" column that says which measurements belong to the same subject (animal, patient, experiment). Without it the rows would be paired by their order in the file.');
-    const key = r => gcols.map(i => r[i] == null ? null : String(r[i]));
-    let names;
+    const key = r => gcols.map(i => cat(r, i) == null ? null : String(cat(r, i)));
+    // Observations are assigned by the tuple of levels (a cell index), never by the display name: "a" + "b · c" and
+    // "a · b" + "c" both read "a · b · c" (v0.6.1, independent review: two cells received each other's values).
+    let tuples, names;
     if (gcols.length === 2) { // two-way: A-major order, as Thistle Plot's two-way ANOVA expects
-      const A = levels(gcols[0], spec.orderA), B = levels(gcols[1], spec.orderB);
-      names = A.flatMap(a => B.map(b => `${a} · ${b}`));
+      const A = levels(gcols[0], spec.orderA, 'orderA'), B = levels(gcols[1], spec.orderB, 'orderB');
+      tuples = A.flatMap(a => B.map(b => [a, b]));
+      names = tuples.map(([a, b]) => `${a} · ${b}`);
+      if (new Set(names).size < names.length) names = tuples.map(([a, b]) => `[${a}] · [${b}]`); // keep labels distinct
+      if (new Set(names).size < names.length) names = names.map((n, k) => `${n} (cell ${k + 1})`);
       notes.push(`Two-way layout: factor A = ${cols[gcols[0]]} (${A.length} levels), factor B = ${cols[gcols[1]]} (${B.length} levels).`);
       spec._nA = A.length; spec._nB = B.length;
-    } else names = putFirst(levels(gcols[0], spec.order), spec.control);
-    const gname = r => { const k = key(r); return k.some(x => x == null) ? null : k.join(' · '); };
-    const valid = rows.filter(r => gname(r) != null && num(r[vi]) != null);
+    } else { names = putFirst(levels(gcols[0], spec.order), spec.control); tuples = names.map(n => [n]); }
+    const cellOf = new Map(tuples.map((t, k) => [JSON.stringify(t), k]));
+    const gidx = r => { const k = key(r); return k.some(x => x == null) ? null : (cellOf.get(JSON.stringify(k)) ?? null); };
+    const valid = rows.filter(r => gidx(r) != null && num(r[vi]) != null);
     if (si >= 0) {
       const subjects = levels(si);
-      const noId = valid.filter(r => r[si] == null || String(r[si]).trim() === '').length;
+      const hasId = r => cat(r, si) != null && String(cat(r, si)).trim() !== '';
+      const noId = valid.filter(r => !hasId(r)).length;
       if (noId) notes.push(`${noId} row(s) with no subject ID were left out.`);
-      const cellVals = new Map();
-      valid.forEach(r => { const k = String(r[si]) + '\u0000' + gname(r); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
+      const cellVals = new Map(); // rows without an ID are left out here, so they never count as repeated measurements
+      valid.filter(hasId).forEach(r => { const k = JSON.stringify([String(cat(r, si)), gidx(r)]); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
       // One value per subject and group: repeated (technical) measurements are averaged, so the subject stays the unit
       // of analysis (v0.5.0: repeats became extra pairs and inflated n and the degrees of freedom).
       const repeated = [...cellVals.values()].filter(v => v.length > 1).length;
       if (repeated) notes.push(`${repeated} subject × group cell(s) had repeated measurements; they were averaged, so each subject counts once.`);
       G.nReps = 1; G.rowNames = subjects; G.nRows = subjects.length;
-      G.groups = names.map(n => ({ name: n, reps: ['Value'],
-        data: subjects.map(s => { const v = cellVals.get(String(s) + '\u0000' + n); return [v?.length ? v.reduce((a, x) => a + x, 0) / v.length : '']; }) }));
+      G.groups = names.map((n, g) => ({ name: n, reps: ['Value'],
+        data: subjects.map(s => { const v = cellVals.get(JSON.stringify([String(s), g])); return [v?.length ? v.reduce((a, x) => a + x, 0) / v.length : '']; }) }));
     } else {
-      const byG = names.map(n => valid.filter(r => gname(r) === n).map(r => num(r[vi])));
+      const byG = names.map((_, g) => valid.filter(r => gidx(r) === g).map(r => num(r[vi])));
       const n = Math.max(...byG.map(v => v.length));
       G.nRows = n; G.rowNames = Array.from({ length: n }, (_, i) => `Obs ${i + 1}`);
       G.groups = names.map((nm, k) => ({ name: nm, reps: ['Value'], data: Array.from({ length: n }, (_, i) => [byG[k][i] ?? '']) }));
@@ -108,22 +166,24 @@ export function buildG(spec, table) {
   } else if (layout === 'wide' || layout === 'single') {
     let cs = [].concat(spec.columns || []).map(ci);
     if (!cs.length) throw new Error('"columns" is required for the wide layout.');
-    if (spec.control != null) { const k = cs.findIndex(i => norm(cols[i]) === norm(spec.control));
+    // the same column twice (exactly, or Control / control resolving to one header) would be tested against itself
+    { const d = cs.find((c, j) => cs.indexOf(c) !== j); if (d !== undefined) throw new Error(`Column "${cols[d]}" is listed more than once in "columns" (v0.6.1).`); }
+    if (spec.control != null) { const k = pickName(cs.map(i => cols[i]), spec.control, 'Control');
       if (k < 0) throw new Error(`Control "${spec.control}" is not one of the columns: ${cs.map(i => cols[i]).join(', ')}.`); // v0.6.0: was ignored
       if (k > 0) cs = [cs[k], ...cs.filter((_, j) => j !== k)]; }
     const li = spec.label ? ci(spec.label) : -1;
     const keep = rows.filter(r => cs.some(i => num(r[i]) != null));
-    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(r[li] ?? `Row ${k + 1}`) : `Row ${k + 1}`);
+    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(cat(r, li) ?? `Row ${k + 1}`) : `Row ${k + 1}`);
     G.groups = cs.map(i => ({ name: cols[i], reps: ['Value'], data: keep.map(r => [cell(r[i])]) }));
   } else if (layout === 'xy') {
     const xi = ci(spec.x), yi = ci(spec.y), li = spec.label ? ci(spec.label) : -1;
     const keep = rows.filter(r => num(r[xi]) != null && num(r[yi]) != null);
     if (keep.length < rows.length) notes.push(`${rows.length - keep.length} row(s) with a missing X or Y were left out.`);
-    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(r[li]) : `Point ${k + 1}`);
+    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(cat(r, li)) : `Point ${k + 1}`);
     G.groups = [xi, yi].map(i => ({ name: cols[i], reps: ['Value'], data: keep.map(r => [num(r[i])]) }));
   } else if (layout === 'counts') {
     const ri = ci(spec.rows), cj = ci(spec.cols), ni = spec.count ? ci(spec.count) : -1;
-    const R = levels(ri, spec.orderRows), C = putFirst(levels(cj, spec.order), spec.control);
+    const R = levels(ri, spec.orderRows, 'orderRows'), C = putFirst(levels(cj, spec.order), spec.control);
     const tab = R.map(() => C.map(() => 0)), seen = R.map(() => C.map(() => false)), bad = [];
     // Pre-counted data: each count must be a whole number >= 0 (v0.6.0: a blank became 0 and two 0.5 became 1 before
     // Thistle Plot could check the table). A combination with no row at all counts as 0, and the notes say which.
@@ -132,8 +192,8 @@ export function buildG(spec, table) {
       if (Number.isInteger(x) && x >= 0) return x;
       bad.push(`row ${k + 1} (${r_label(k)}): ${v == null || String(v).trim() === '' ? 'blank' : JSON.stringify(v)}`); return 0;
     };
-    const r_label = k => `${rows[k][ri]} × ${rows[k][cj]}`;
-    rows.forEach((r, k) => { const a = R.indexOf(String(r[ri])), b = C.indexOf(String(r[cj])); if (a < 0 || b < 0) return;
+    const r_label = k => `${cat(rows[k], ri)} × ${cat(rows[k], cj)}`;
+    rows.forEach((r, k) => { const a = R.indexOf(String(cat(r, ri))), b = C.indexOf(String(cat(r, cj))); if (a < 0 || b < 0) return;
       seen[a][b] = true; tab[a][b] += ni >= 0 ? count(r[ni], k) : 1; });
     if (bad.length) throw new Error(`Counts in "${cols[ni]}" must be whole numbers of 0 or more: ${bad.slice(0, 5).join('; ')}${bad.length > 5 ? `; and ${bad.length - 5} more` : ''}. Fix the file or use the raw rows instead of counts.`);
     if (ni >= 0) { const absent = []; R.forEach((a, i) => C.forEach((c, j) => { if (!seen[i][j]) absent.push(`${a} × ${c}`); }));
@@ -142,17 +202,19 @@ export function buildG(spec, table) {
     G.groups = C.map((c, b) => ({ name: c, reps: ['Value'], data: R.map((_, a) => [tab[a][b]]) }));
   } else if (layout === 'survival') {
     const ti = ci(spec.time), ei = ci(spec.event), gi = ci(spec.group);
-    const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && r[gi] != null);
+    const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && cat(r, gi) != null);
     const names = putFirst(levels(gi, spec.order), spec.control);
     G.nRows = keep.length; G.rowNames = keep.map((r, k) => `Subject ${k + 1}`);
     G.groups = [{ name: cols[ti], reps: ['Value'], data: keep.map(r => [num(r[ti])]) },
-      ...names.map(n => ({ name: n, reps: ['Value'], data: keep.map(r => [String(r[gi]) === n ? (num(r[ei]) ? 1 : 0) : '']) }))];
+      ...names.map(n => ({ name: n, reps: ['Value'], data: keep.map(r => [String(cat(r, gi)) === n ? (num(r[ei]) ? 1 : 0) : '']) }))];
   } else if (layout === 'matrix') {
     const li = ci(spec.label), entries = Object.entries(spec.groups || {});
     if (!entries.length) throw new Error('"groups" ({name: [replicate columns]}) is required for the matrix layout.');
     const nReps = Math.max(...entries.map(([, c]) => c.length));
     const idx = entries.map(([n, c]) => [n, c.map(ci)]);
-    G.nRows = rows.length; G.rowNames = rows.map((r, k) => String(r[li] ?? `Feature ${k + 1}`));
+    { const all = idx.flatMap(([, is]) => is), d = all.find((c, j) => all.indexOf(c) !== j);
+      if (d !== undefined) throw new Error(`Column "${cols[d]}" is listed more than once in "groups" (v0.6.1).`); }
+    G.nRows = rows.length; G.rowNames = rows.map((r, k) => String(cat(r, li) ?? `Feature ${k + 1}`));
     if (['pca', 'heatmap'].includes(spec.test)) { // Thistle Plot treats each column group as one sample here
       G.nReps = 1;
       G.groups = idx.flatMap(([n, is]) => is.map(i => ({ name: `${n} · ${cols[i]}`, reps: ['Value'], data: rows.map(r => [cell(r[i])]) })));
@@ -239,15 +301,6 @@ export class ThistlePlot extends ThistleApp {
       return true;
     };
     const opts = { ...(spec.options || {}) };
-    if (spec.test === 'anova2') { // the factor sizes come from the table; an option may only repeat them (v0.6.0)
-      for (const [key, v] of Object.entries(opts)) {
-        const which = /^opt-na$|factor a|\bna\b/i.test(key) ? 'A' : /^opt-nb$|factor b|\bnb\b/i.test(key) ? 'B' : null;
-        if (!which) continue;
-        const want = which === 'A' ? spec._nA : spec._nB;
-        if (want != null && Number(v) !== want) throw new Error(`Factor ${which} has ${want} levels in the data, but the options ask for ${v}. The design is taken from the data (A = ${spec._nA}, B = ${spec._nB} levels).`);
-        delete opts[key];
-      }
-    }
     if (spec.test === 'anova2') for (const [id, v, lab] of [['opt-nA', spec._nA, 'Factor A levels (nA)'], ['opt-nB', spec._nB, 'Factor B levels (nB)']]) {
       const el = v && doc.getElementById(id);
       if (el) { setEl(el, v); applied.push(`${lab} = ${v}`); await sleep(30); }
@@ -260,7 +313,17 @@ export class ThistlePlot extends ThistleApp {
     }
     const order = Object.entries(opts).filter(([l]) => !l.startsWith('__')).sort(([a], [b]) => (isCmp(b) ? 1 : 0) - (isCmp(a) ? 1 : 0));
     for (const [label, v] of order) {
-      const found = ThistlePlot.readOptions(doc).find(o => norm(o.label).includes(norm(label)) || norm(o.id) === norm(label));
+      const menu = ThistlePlot.readOptions(doc);
+      const query = norm(label);
+      const exact = menu.filter(o => norm(o.label) === query || norm(o.id) === query);
+      const matches = exact.length ? exact : menu.filter(o => query && norm(o.label).includes(query));
+      if (matches.length > 1) throw new Error(`Ambiguous option "${label}": ${matches.map(o => o.label).join(', ')}.`);
+      const found = matches[0];
+      if (spec.test === 'anova2' && ['opt-nA', 'opt-nB'].includes(found?.id)) {
+        const inferred = found.id === 'opt-nA' ? spec._nA : spec._nB;
+        if (inferred != null && Number(v) !== inferred) throw new Error(`${found.label} has ${inferred} levels in the data but the option asks for ${v}.`);
+        if (!Number.isInteger(Number(v)) || Number(v) < 2) throw new Error(`${found.label} requires a whole number of at least two.`);
+      }
       const el = found && doc.getElementById(found.id);
       if (!el) throw new Error(`Thistle Plot has no option "${label}" for this test (v0.6.0: it used to run with the default). Options: ${ThistlePlot.readOptions(doc).map(o => o.label).filter(Boolean).join(' | ')}.`);
       const res = setEl(el, v);

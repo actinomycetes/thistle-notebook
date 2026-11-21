@@ -149,5 +149,141 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   r = await run({ ...example, options: { 'Post-hoc correction': 'Dunnett', 'Confidence band': '99%' } }, M);
   ok(r.error && /Confidence band/.test(r.error), 'options: an option Thistle Plot does not have is refused ' + (r.error || ''));
 
+  const identity = await page.evaluate(async () => {
+    const {parseFile} = await import('./js/ingest.js');
+    const {buildG} = await import('./js/thistle.js');
+    const file = new File(['ID,Group,Y\n1e3,A,1e3\n1000,A,2\nNA,A,3\n'], 'identity.csv');
+    const parsed = await parseFile(file, {});
+    const out = buildG({layout:'long',subject:'ID',group:'Group',value:'Y'},parsed.tables.identity);
+    // measurement-like columns (mostly decimals) keep no original text, so large tables do not grow
+    const big = await parseFile(new File(['G,Y\n' + Array.from({ length: 500 }, (_, i) => `g${i % 3},${(i / 7).toFixed(2)}0`).join('\n')], 'big.csv'), {});
+    return { G: out.G, notes: out.notes, bigOrig: (big.tables.big.originalText || []).length };
+  });
+  ok(JSON.stringify(identity.G.rowNames) === '["1e3","1000"]' && identity.G.groups[0].data[0][0] === 1000,
+    'categorical spellings survive while scientific-notation measurements stay numeric ' + JSON.stringify(identity.G.rowNames));
+  ok(identity.notes.some(n => /1 row.*no subject/i.test(n)), 'NA in a subject column stays missing (not a subject called "NA") and is reported');
+  ok(identity.bigOrig === 0, 'a column of decimals stores no original text (saved notebooks do not grow): ' + identity.bigOrig);
+  // independent review of PR #1: decimal-looking subject IDs 1.1, 1.10 and 2.0 are three subjects, not two
+  const dec = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const parsed = await parseFile(new File(['ID,Cond,Y\n1.1,A,1\n1.10,A,2\n2.0,A,3\n1.1,B,4\n1.10,B,6\n2.0,B,8\n'], 'dec.csv'), {});
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const all = buildG(spec, parsed.tables.dec);
+    const filtered = buildG({ ...spec, filter: { ID: ['1.1', '1.10', '2.0'] } }, parsed.tables.dec);
+    let unmatched; try { buildG({ ...spec, filter: { ID: ['1.1', '3.0'] } }, parsed.tables.dec); } catch (e) { unmatched = e.message; }
+    const one = id => buildG({ ...spec, filter: { ID: [id] } }, parsed.tables.dec).G.rowNames;
+    let ambiguous; try { one('1.100'); } catch (e) { ambiguous = e.message; }
+    return { ...all, filtered: filtered.G.rowNames, unmatched, only11: one('1.1'), only110: one('1.10'), only20: one('2.0'), ambiguous };
+  });
+  ok(dec.G.rowNames.length === 3 && dec.G.rowNames.includes('1.1') && dec.G.rowNames.includes('1.10'), 'decimal-looking subject IDs 1.1 and 1.10 stay separate: 3 pairs ' + JSON.stringify(dec.G.rowNames));
+  ok(!dec.notes.some(n => /averag/i.test(n)), 'no subjects merged and averaged as technical repeats');
+  ok(JSON.stringify(dec.filtered) === JSON.stringify(dec.G.rowNames), 'a filter listing the three original IDs keeps the same three pairs ' + JSON.stringify(dec.filtered));
+  ok(/3\.0/.test(dec.unmatched || ''), 'a filter value that matches no row stops the run and names it: ' + dec.unmatched);
+  ok(JSON.stringify(dec.only11) === '["1.1"]', 'filter 1.1 alone selects exactly subject 1.1 ' + JSON.stringify(dec.only11));
+  ok(JSON.stringify(dec.only110) === '["1.10"]', 'filter 1.10 alone selects exactly subject 1.10 (not 1.1 as well) ' + JSON.stringify(dec.only110));
+  ok(JSON.stringify(dec.only20) === '["2"]', 'filter 2.0 still finds the stored 2 ' + JSON.stringify(dec.only20));
+  ok(/1\.100/.test(dec.ambiguous || '') && /1\.1\b/.test(dec.ambiguous || '') && /1\.10/.test(dec.ambiguous || ''), 'a value that matches two spellings only by number (1.100) is refused and names both: ' + dec.ambiguous);
+  // independent review: case matters for IDs; S1 and s1 are two subjects, so a filter must not join them
+  const cs = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const parsed = await parseFile(new File(['ID,Cond,Y\nS1,A,1\ns1,A,2\nS2,A,3\nS1,B,4\ns1,B,6\nS2,B,8\n'], 'case.csv'), {});
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const one = id => { try { return buildG({ ...spec, filter: { ID: [id] } }, parsed.tables.case).G.rowNames; } catch (e) { return 'ERR ' + e.message; } };
+    return { all: buildG(spec, parsed.tables.case).G.rowNames, S1: one('S1'), s1: one('s1'), s2: one('s2') };
+  });
+  ok(cs.all.length === 3, 'S1, s1 and S2 are three subjects ' + JSON.stringify(cs.all));
+  ok(JSON.stringify(cs.S1) === '["S1"]', 'filter S1 selects only S1 ' + JSON.stringify(cs.S1));
+  ok(JSON.stringify(cs.s1) === '["s1"]', 'filter s1 selects only s1 ' + JSON.stringify(cs.s1));
+  ok(JSON.stringify(cs.s2) === '["S2"]', 'a different case still matches when only one spelling exists (s2 → S2) ' + JSON.stringify(cs.s2));
+  // independent review: filters resolve against the whole column, not the rows left by an earlier filter
+  const mf = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const t1 = (await parseFile(new File(['ID,Site,Cond,Y\nS1,North,A,1\nS1,North,B,2\ns1,South,A,3\ns1,South,B,5\n'], 'mf.csv'), {})).tables.mf;
+    const t2 = (await parseFile(new File(['ID,Site,Cond,Y\n1.1,North,A,1\n1.1,North,B,2\n1.10,South,A,3\n1.10,South,B,5\n'], 'mf2.csv'), {})).tables.mf2;
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const go = (t, filter) => { try { const b = buildG({ ...spec, filter }, t); return { names: b.G.rowNames, vals: b.G.groups.map(g => g.data.map(x => x[0])) }; } catch (e) { return { error: e.message }; } };
+    return { a: go(t1, { ID: 'S1', Site: 'South' }), b: go(t1, { Site: 'South', ID: 'S1' }),
+      c: go(t1, { ID: 's1', Site: 'South' }), d: go(t1, { Site: 'South', ID: 's1' }), e: go(t2, { Site: 'South', ID: '1.100' }) };
+  });
+  ok(mf.a.error && mf.b.error && /no rows/i.test(mf.a.error) && /no rows/i.test(mf.b.error), 'ID S1 + Site South selects nothing in either order (S1 was swapped for s1 when Site came first) ' + JSON.stringify([mf.a, mf.b]));
+  ok(!mf.c.error && JSON.stringify(mf.c) === JSON.stringify(mf.d) && JSON.stringify(mf.c.names) === '["s1"]' && JSON.stringify(mf.c.vals) === '[[3],[5]]', 'ID s1 + Site South gives the same subject and values in either order ' + JSON.stringify([mf.c, mf.d]));
+  ok(mf.e.error && /1\.100/.test(mf.e.error) && /could mean/.test(mf.e.error), 'a site filter cannot make an ambiguous 1.100 resolve to one subject ' + JSON.stringify(mf.e));
+  // independent review: a measurement column used as a filter, or one whose name differs only in case from the subject
+  // column, keeps its typed numbers ("1,000" is 1000), so no pair is lost
+  const meas = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const t = (await parseFile(new File(['ID,Cond,Y\nP1,A,"1,000"\nP1,B,1100\nP2,A,900\nP2,B,1001\n'], 'm.csv'), {})).tables.m;
+    const t2 = (await parseFile(new File(['id,Cond,ID\nP1,A,"1,000"\nP1,B,1100\nP2,A,900\nP2,B,1001\n'], 'm2.csv'), {})).tables.m2;
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const pick = b => ({ names: b.G.rowNames, vals: b.G.groups.map(g => g.data.map(x => x[0])), notes: b.notes });
+    return { plain: pick(buildG(spec, t)), filt: pick(buildG({ ...spec, filter: { Y: ['1,000', '1100', '900', '1001'] } }, t)),
+      cased: pick(buildG({ ...spec, subject: 'id', value: 'ID' }, t2)) };
+  });
+  ok(JSON.stringify(meas.plain.vals) === '[[1000,900],[1100,1001]]', 'unfiltered: 1,000 is read as 1000 ' + JSON.stringify(meas.plain.vals));
+  ok(JSON.stringify(meas.filt.vals) === JSON.stringify(meas.plain.vals) && JSON.stringify(meas.filt.names) === JSON.stringify(meas.plain.names) && !meas.filt.notes.some(n => /left out/.test(n)),
+    'filtering a measurement column by all its values gives the same table, two complete pairs, no dropped rows ' + JSON.stringify(meas.filt));
+  ok(JSON.stringify(meas.cased.vals) === '[[1000,900],[1100,1001]]' && !meas.cased.notes.some(n => /left out/.test(n)), 'subject "id" and value "ID" keep the measurement typed ' + JSON.stringify(meas.cased));
+  // independent review: two-way cells are keyed by their levels, not by a joined display name
+  const cells = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const t = { columns: ['A', 'B', 'Y', 'S'], rows: [['a', 'b · c', 10, 'p1'], ['a', 'c', 20, 'p1'], ['a · b', 'b · c', 30, 'p1'], ['a · b', 'c', 40, 'p1']] };
+    const un = buildG({ test: 'anova2', layout: 'long', group: ['A', 'B'], value: 'Y' }, t);
+    const pr = buildG({ test: 'anova2', layout: 'long', group: ['A', 'B'], value: 'Y', subject: 'S' }, t);
+    const vals = b => b.G.groups.map(g => g.data.map(x => x[0]).filter(v => v !== ''));
+    return { un: vals(un), pr: vals(pr), names: un.G.groups.map(g => g.name) };
+  });
+  ok(JSON.stringify(cells.un) === '[[10],[20],[30],[40]]', 'unpaired: each two-way cell gets only its own value (cells 1 and 4 both got [10,40]) ' + JSON.stringify(cells.un));
+  ok(JSON.stringify(cells.pr) === '[[10],[20],[30],[40]]', 'subject-indexed: each two-way cell gets only its own value ' + JSON.stringify(cells.pr));
+  ok(new Set(cells.names).size === 4, 'the four cells have four different names ' + JSON.stringify(cells.names));
+  // independent review: a level repeated in an order list is refused instead of duplicating a group
+  const ord = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const t = { columns: ['Cond', 'Y'], rows: [['A', 1000], ['A', 900], ['B', 1100], ['B', 1001]] };
+    const t2 = { columns: ['F', 'G', 'Y'], rows: [['x', 'u', 1], ['x', 'v', 2], ['y', 'u', 3], ['y', 'v', 4]] };
+    const err = f => { try { f(); return null; } catch (e) { return e.message; } };
+    return {
+      one: err(() => buildG({ test: 'anova', layout: 'long', group: 'Cond', value: 'Y', order: ['A', 'A', 'B'] }, t)),
+      two: err(() => buildG({ test: 'anova2', layout: 'long', group: ['F', 'G'], value: 'Y', orderB: ['v', 'v'] }, t2)),
+      partial: buildG({ test: 'anova', layout: 'long', group: 'Cond', value: 'Y', order: ['B'] }, t).G.groups.map(g => g.name) };
+  });
+  ok(/"order"/.test(ord.one || '') && /"A"/.test(ord.one || ''), 'a repeated level in "order" is refused, naming the field and level: ' + ord.one);
+  ok(/"orderB"/.test(ord.two || '') && /"v"/.test(ord.two || ''), 'a repeated level in "orderB" is refused: ' + ord.two);
+  ok(JSON.stringify(ord.partial) === '["B","A"]', 'a valid partial order puts B first and adds A once ' + JSON.stringify(ord.partial));
+  // independent review: a column requested twice in the wide layout is refused; missing IDs do not count as repeats
+  const wd = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const t = { columns: ['Control', 'Drug'], rows: [[1, 5], [2, 7], [3, 9]] };
+    const t2 = { columns: ['Control', 'control', 'Drug'], rows: [[1, 10, 5], [2, 20, 7], [3, 30, 9]] };
+    const err = f => { try { f(); return null; } catch (e) { return e.message; } };
+    const ids = rows => buildG({ test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' }, { columns: ['ID', 'Cond', 'Y'], rows }).notes;
+    return {
+      exact: err(() => buildG({ layout: 'wide', columns: ['Control', 'Control', 'Drug'] }, t)),
+      cased: err(() => buildG({ layout: 'wide', columns: ['Control', 'control', 'Drug'] }, t)),
+      distinct: buildG({ layout: 'wide', columns: ['Control', 'control', 'Drug'] }, t2).G.groups.map(g => [g.name, g.data.map(x => x[0])]),
+      noId: ids([['P', 'A', 1], ['P', 'B', 2], [null, 'A', 4], [null, 'A', 8]]),
+      rep: ids([['P', 'A', 1], ['P', 'A', 3], ['P', 'B', 2], [null, 'A', 4]]) };
+  });
+  ok(/Control/.test(wd.exact || '') && /more than once/.test(wd.exact || ''), 'wide: an exactly repeated column is refused: ' + wd.exact);
+  ok(/Control/.test(wd.cased || '') && /more than once/.test(wd.cased || ''), 'wide: "Control" and "control" naming the same column are refused: ' + wd.cased);
+  ok(JSON.stringify(wd.distinct) === '[["Control",[1,2,3]],["control",[10,20,30]],["Drug",[5,7,9]]]', 'wide: two different columns Control and control are both used ' + JSON.stringify(wd.distinct));
+  ok(wd.noId.some(n => /2 row.*no subject/.test(n)) && !wd.noId.some(n => /averag/.test(n)), 'rows without an ID give only the missing-ID note, no averaging note ' + JSON.stringify(wd.noId));
+  ok(wd.rep.some(n => /1 subject × group cell.*averag/.test(n)), 'a real repeat for P still gives the averaging note ' + JSON.stringify(wd.rep));
+  // the same rule for column names and control groups
+  r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
+    [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
+  ok(!r.error && r.G.groups[0].name === 'ctrl' && r.G.groups[0].data.map(x => x[0]).join() === '20,21,22', 'control "ctrl" and column "y" are taken exactly, not "Ctrl" / "Y" ' + (r.error || JSON.stringify(r.G?.groups?.map(g => g.name))));
+  r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'CTRL', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'], [['Ctrl', 1, 10], ['ctrl', 5, 20]])]);
+  ok(r.error && /Ctrl/.test(r.error) && /ctrl/.test(r.error), 'a control that matches two groups only by case is refused ' + (r.error || ''));
+
+  const six = ['A1','A2','A3','B1','B2','B3'];
+  const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));
+  r = await run({ test:'anova2', layout:'wide', columns:six, options:{'opt-nA':2,'opt-nB':3} }, [groups]);
+  ok(!r.error && /1200\.500/.test(r.text), 'wide two-way design preserves explicit 2 by 3 dimensions');
+  r = await run({ ...wspec, dataset: 'wide.csv' }, [groups, groups]);
+  ok(/Multiple loaded/.test(r.error || ''), 'duplicate filenames require unique selection');
   await b.close(); process.exit(fails ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
