@@ -205,7 +205,7 @@ function chatReply(body) {
   await page.waitForSelector('#modal:not([hidden]) .table-tools', { timeout: 20000 });
   const [x1] = await Promise.all([page.waitForEvent('download'), page.click('#modalBody .tp-btns button:has-text("Excel")')]);
   const xlsxPath = path.join(OUT, 'lit.xlsx'); fs.copyFileSync(await x1.path(), xlsxPath);
-  const { unzip } = await import(path.join(__dirname, '..', 'js', 'zip.js'));
+  const { unzip } = await import(require('node:url').pathToFileURL(path.join(__dirname, '..', 'js', 'zip.js')).href); // file URL: works on Windows too
   const xz = await unzip(fs.readFileSync(xlsxPath));
   const wb = await xz.text('xl/workbook.xml'), sh1 = await xz.text('xl/worksheets/sheet1.xml'), sh2 = await xz.text('xl/worksheets/sheet2.xml');
   ok(/name="Comparison table"/.test(wb) && /name="Sources cited"/.test(wb), 'xlsx: table sheet named from heading + Sources sheet');

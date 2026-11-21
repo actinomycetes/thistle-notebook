@@ -87,6 +87,9 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   are assigned by level tuple (`cellOf`, cell index), never by the joined display name (labels are bracketed if two would
   read the same); `levels()` refuses a level repeated in order / orderA / orderB / orderRows. Wide `columns` and matrix
   `groups` refuse a column (resolved index) listed twice; rows without a subject ID never enter the per-subject cells.
+  Identity across the suite: `readStatsTable` reads Flow's sample-name column as text; `profileTable` shows the kept
+  spellings to the model (unique counts, levels, CSV; numeric summaries stay typed); the .xlsx writer keeps leading-zero
+  and >15-significant-digit numbers as text (`asNumber`).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

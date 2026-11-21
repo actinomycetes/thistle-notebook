@@ -389,5 +389,6 @@ export function readStatsTable(t) {
     const n = +v.replace(/,/g, ''); return isFinite(n) ? n : v;
   };
   if (rows.length < 2) return { columns: rows[0]?.map(c => c.textContent.trim()) || [], rows: [] };
-  return { columns: rows[0].map((c, i) => c.textContent.trim() || (i ? `col${i + 1}` : 'Sample')), rows: rows.slice(1).map(r => r.map(typed)) };
+  // the first column holds sample names: text, never numbers (v0.6.1: 001 and 1 both became 1); statistics read data-v
+  return { columns: rows[0].map((c, i) => c.textContent.trim() || (i ? `col${i + 1}` : 'Sample')), rows: rows.slice(1).map(r => r.map((c, i) => i ? typed(c) : (c.textContent.trim() || null))) };
 }

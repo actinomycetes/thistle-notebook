@@ -234,11 +234,16 @@ function stats(v) {
 }
 export function profileTable(t, name) {
   const { columns, rows } = t, out = [`### Dataset: ${name}`, `Shape: ${rows.length} rows × ${columns.length} columns`, ''];
-  const col = i => rows.map(r => r[i]);
-  const isNum = i => { const v = col(i).filter(x => x != null); return v.length > 0 && v.filter(x => typeof x === 'number').length / v.length > 0.9; };
+  // What the model sees uses the spellings the importer kept (1e3 and 1000 are two IDs); numeric summaries use the typed
+  // cells (v0.6.1, wider review: the model saw one ID where the analysis had two)
+  const drows = rows.map(r => r.slice());
+  for (const [ri, ci, txt] of t.originalText || []) if (drows[ri]) drows[ri][ci] = txt;
+  const col = i => rows.map(r => r[i]), dcol = i => drows.map(r => r[i]);
+  const uniq = v => new Set(v.filter(x => x != null).map(String)).size;
+  const isNum = i => { const v = col(i).filter(x => x != null); return v.length > 0 && v.filter(x => typeof x === 'number').length / v.length > 0.9 && uniq(dcol(i)) <= uniq(col(i)); };
   const numIdx = columns.map((_, i) => i).filter(isNum).slice(0, 40), catIdx = columns.map((_, i) => i).filter(i => !isNum(i));
   out.push('#### Columns', '| column | type | missing | unique |', '|---|---|---|---|');
-  columns.forEach((c, i) => { const v = col(i); out.push(`| ${c} | ${isNum(i) ? 'numeric' : 'text'} | ${v.filter(x => x == null).length} | ${new Set(v.filter(x => x != null)).size} |`); });
+  columns.forEach((c, i) => { const v = dcol(i); out.push(`| ${c} | ${isNum(i) ? 'numeric' : 'text'} | ${v.filter(x => x == null).length} | ${uniq(v)} |`); });
   if (numIdx.length) {
     out.push('', '#### Numeric summary', '| column | n | mean | SD | min | Q1 | median | Q3 | max | |z|>3 |', '|---|---|---|---|---|---|---|---|---|---|');
     for (const i of numIdx) {
@@ -248,20 +253,20 @@ export function profileTable(t, name) {
     }
   }
   for (const i of catIdx.slice(0, 10)) {
-    const counts = new Map(); col(i).forEach(x => counts.set(x ?? '(blank)', (counts.get(x ?? '(blank)') || 0) + 1));
+    const counts = new Map(); dcol(i).forEach(x => counts.set(x ?? '(blank)', (counts.get(x ?? '(blank)') || 0) + 1));
     if (counts.size > 30 || counts.size === rows.length) continue;
     out.push('', `#### Levels of \`${columns[i]}\``, [...counts].map(([k, n]) => `${k}: ${n}`).join('; '));
     if (counts.size <= 12 && numIdx.length) {
       out.push(`Numeric columns by \`${columns[i]}\` (mean ± SD, n):`);
       for (const j of numIdx.slice(0, 8)) {
-        const parts = [...counts.keys()].map(lv => { const s = stats(rows.filter(r => (r[i] ?? '(blank)') === lv).map(r => r[j])); return s ? `${lv}: ${fmt(s.mean)} ± ${fmt(s.sd)} (n=${s.n})` : null; }).filter(Boolean);
+        const parts = [...counts.keys()].map(lv => { const s = stats(rows.filter((r, k) => (drows[k][i] ?? '(blank)') === lv).map(r => r[j])); return s ? `${lv}: ${fmt(s.mean)} ± ${fmt(s.sd)} (n=${s.n})` : null; }).filter(Boolean);
         out.push(`- ${columns[j]} — ${parts.join('; ')}`);
       }
     }
   }
   const csv = rs => [columns, ...rs].map(r => r.map(v => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v).join(',')).join('\n');
-  if (rows.length <= 400) out.push('', '#### Full data (CSV)', '```csv', csv(rows), '```');
-  else out.push('', `#### First 40 of ${rows.length} rows (statistics should be run in Thistle Plot on the full table)`, '```csv', csv(rows.slice(0, 40)), '```');
+  if (rows.length <= 400) out.push('', '#### Full data (CSV)', '```csv', csv(drows), '```');
+  else out.push('', `#### First 40 of ${rows.length} rows (statistics should be run in Thistle Plot on the full table)`, '```csv', csv(drows.slice(0, 40)), '```');
   return out.join('\n');
 }
 

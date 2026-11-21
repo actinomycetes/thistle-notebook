@@ -272,6 +272,29 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(JSON.stringify(wd.distinct) === '[["Control",[1,2,3]],["control",[10,20,30]],["Drug",[5,7,9]]]', 'wide: two different columns Control and control are both used ' + JSON.stringify(wd.distinct));
   ok(wd.noId.some(n => /2 row.*no subject/.test(n)) && !wd.noId.some(n => /averag/.test(n)), 'rows without an ID give only the missing-ID note, no averaging note ' + JSON.stringify(wd.noId));
   ok(wd.rep.some(n => /1 subject × group cell.*averag/.test(n)), 'a real repeat for P still gives the averaging note ' + JSON.stringify(wd.rep));
+  // wider review: identifiers keep their text across the suite (Flow table → Notebook, model summary, Excel export)
+  const idx = await page.evaluate(async () => {
+    const { readStatsTable, buildG } = await import('./js/thistle.js');
+    const { parseFile, profileTable } = await import('./js/ingest.js');
+    const { tablesToXlsx } = await import('./js/export.js');
+    const { unzip } = await import('./js/zip.js');
+    const t = document.createElement('table');
+    t.innerHTML = '<thead><tr><th>Sample</th><th>CD3+ | Count</th></tr></thead><tbody><tr><td>001</td><td data-v="10">10</td></tr><tr><td>1</td><td data-v="20">20</td></tr></tbody>';
+    const flow = readStatsTable(t);
+    const fg = buildG({ layout: 'long', group: 'Sample', value: 'CD3+ | Count' }, flow).G.groups.map(g => [g.name, g.data.map(x => x[0]).filter(v => v !== '')]);
+    const ds = (await parseFile(new File(['ID,Cond,Y\n1e3,A,1\n1000,B,2\n'], 'p.csv'), {})).tables.p;
+    const prof = profileTable(ds, 'p.csv');
+    const f = id => buildG({ layout: 'long', group: 'Cond', value: 'Y', filter: { ID: id } }, ds).G.groups.map(g => g.name);
+    const blob = tablesToXlsx([{ title: 'T', header: ['ID', 'Y'], rows: [['001', '1.5'], ['9007199254740993', '2.25']] }]);
+    const z = await unzip(new Uint8Array(await blob.arrayBuffer())), sh = await z.text('xl/worksheets/sheet1.xml');
+    return { flowNames: flow.rows.map(r => r[0]), fg, prof, f1: f('1e3'), f2: f('1000'), sh };
+  });
+  ok(JSON.stringify(idx.flowNames) === '["001","1"]', 'Flow sample names 001 and 1 arrive as text ' + JSON.stringify(idx.flowNames));
+  ok(JSON.stringify(idx.fg) === '[["001",[10]],["1",[20]]]', 'Flow samples 001 and 1 stay two groups with their own values ' + JSON.stringify(idx.fg));
+  ok(/\| ID \| text \| 0 \| 2 \|/.test(idx.prof) && /1e3,A,1/.test(idx.prof), 'the summary sent to the model shows two IDs and the spelling 1e3 ' + (idx.prof.match(/\| ID \|[^\n]*/) || [''])[0]);
+  ok(JSON.stringify(idx.f1) === '["A"]' && JSON.stringify(idx.f2) === '["B"]', 'an exact filter on 1e3 and on 1000 selects one row each ' + JSON.stringify([idx.f1, idx.f2]));
+  ok(/t="inlineStr"[^>]*><is><t[^>]*>001</.test(idx.sh) && /t="inlineStr"[^>]*><is><t[^>]*>9007199254740993</.test(idx.sh), 'Excel keeps 001 and a 16-digit ID as text');
+  ok(/<v>1\.5<\/v>/.test(idx.sh) && /<v>2\.25<\/v>/.test(idx.sh), 'Excel keeps ordinary measurements numeric');
   // the same rule for column names and control groups
   r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
     [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
