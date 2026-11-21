@@ -154,11 +154,38 @@ function typed(v) {
   const n = Number(s.replace(/,(?=\d{3}\b)/g, ''));
   return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
 }
+// Keeps the spelling of cells whose typed value would change it (1e3 → 1000), so category columns (subjects, groups)
+// can use the original text (buildG). Missing-value markers (NA, n/a, -) stay missing. In columns that look like
+// measurements (most filled cells are decimals) only spellings that would otherwise collide are kept: two different
+// texts that read as the same number (1.1 and 1.10) would merge two subjects or groups. Formatting that changes nothing
+// (12.300 alone) is not stored, so large tables and saved notebooks do not grow (v0.6.1).
+const MISSING = /^(na|n\/a|nan|null|none|-)$/i;
+function importTable(columns, sourceRows) {
+  const originalText = [];
+  const decimalCol = columns.map((_, c) => {
+    let filled = 0, dec = 0;
+    for (const row of sourceRows) { const t = row[c] == null ? '' : String(row[c]).trim(); if (!t || MISSING.test(t)) continue; filled++; if (/^[-+]?\d*\.\d+(e[-+]?\d+)?%?$/i.test(t)) dec++; }
+    return filled > 0 && dec / filled > 0.5;
+  });
+  const rows = sourceRows.map(row => columns.map((_, c) => typed(row[c])));
+  columns.forEach((_, c) => {
+    const differs = r => { const raw = sourceRows[r][c], v = rows[r][c]; return v !== null && typeof raw === 'string' && raw.trim() !== '' && raw.trim() !== String(v); };
+    let keep = () => true;
+    if (decimalCol[c]) { // keep only values written in more than one way in this column
+      const spellings = new Map();
+      rows.forEach((row, r) => { const v = row[c]; if (v === null) return; const t = String(sourceRows[r][c]).trim(); (spellings.get(v) || spellings.set(v, new Set()).get(v)).add(t); });
+      keep = r => spellings.get(rows[r][c]).size > 1;
+    }
+    for (let r = 0; r < rows.length; r++) if (differs(r) && keep(r)) originalText.push([r, c, String(sourceRows[r][c]).trim()]);
+  });
+  originalText.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
+  return originalText.length ? { columns, rows, originalText } : { columns, rows };
+}
 async function readCsv(file) {
   if (!window.Papa) throw new Error('CSV reader did not load (PapaParse from cdnjs).');
   const res = window.Papa.parse((await file.text()).replace(/^﻿/, ''), { skipEmptyLines: 'greedy' });
   const [head, ...rows] = res.data;
-  return { columns: head.map((c, i) => String(c).trim() || `col${i + 1}`), rows: rows.map(r => head.map((_, i) => typed(r[i]))) };
+  return importTable(head.map((c, i) => String(c).trim() || `col${i + 1}`), rows);
 }
 async function readXlsx(file) {
   const z = await unzip(await file.arrayBuffer()), P = s => new DOMParser().parseFromString(s, 'application/xml');
@@ -184,8 +211,7 @@ async function readXlsx(file) {
     const rows = Array.from(grid, r => r || []).filter(r => r.some(v => v != null && v !== ''));
     if (!rows.length) continue;
     const head = rows[0], n = Math.max(...rows.map(r => r.length));
-    out[sh.getAttribute('name')] = { columns: Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`),
-      rows: rows.slice(1).map(r => Array.from({ length: n }, (_, i) => typed(r[i]))) };
+    out[sh.getAttribute('name')] = importTable(Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows.slice(1));
   }
   return out;
 }
@@ -208,11 +234,16 @@ function stats(v) {
 }
 export function profileTable(t, name) {
   const { columns, rows } = t, out = [`### Dataset: ${name}`, `Shape: ${rows.length} rows × ${columns.length} columns`, ''];
-  const col = i => rows.map(r => r[i]);
-  const isNum = i => { const v = col(i).filter(x => x != null); return v.length > 0 && v.filter(x => typeof x === 'number').length / v.length > 0.9; };
+  // What the model sees uses the spellings the importer kept (1e3 and 1000 are two IDs); numeric summaries use the typed
+  // cells (v0.6.1, wider review: the model saw one ID where the analysis had two)
+  const drows = rows.map(r => r.slice());
+  for (const [ri, ci, txt] of t.originalText || []) if (drows[ri]) drows[ri][ci] = txt;
+  const col = i => rows.map(r => r[i]), dcol = i => drows.map(r => r[i]);
+  const uniq = v => new Set(v.filter(x => x != null).map(String)).size;
+  const isNum = i => { const v = col(i).filter(x => x != null); return v.length > 0 && v.filter(x => typeof x === 'number').length / v.length > 0.9 && uniq(dcol(i)) <= uniq(col(i)); };
   const numIdx = columns.map((_, i) => i).filter(isNum).slice(0, 40), catIdx = columns.map((_, i) => i).filter(i => !isNum(i));
   out.push('#### Columns', '| column | type | missing | unique |', '|---|---|---|---|');
-  columns.forEach((c, i) => { const v = col(i); out.push(`| ${c} | ${isNum(i) ? 'numeric' : 'text'} | ${v.filter(x => x == null).length} | ${new Set(v.filter(x => x != null)).size} |`); });
+  columns.forEach((c, i) => { const v = dcol(i); out.push(`| ${c} | ${isNum(i) ? 'numeric' : 'text'} | ${v.filter(x => x == null).length} | ${uniq(v)} |`); });
   if (numIdx.length) {
     out.push('', '#### Numeric summary', '| column | n | mean | SD | min | Q1 | median | Q3 | max | |z|>3 |', '|---|---|---|---|---|---|---|---|---|---|');
     for (const i of numIdx) {
@@ -222,20 +253,20 @@ export function profileTable(t, name) {
     }
   }
   for (const i of catIdx.slice(0, 10)) {
-    const counts = new Map(); col(i).forEach(x => counts.set(x ?? '(blank)', (counts.get(x ?? '(blank)') || 0) + 1));
+    const counts = new Map(); dcol(i).forEach(x => counts.set(x ?? '(blank)', (counts.get(x ?? '(blank)') || 0) + 1));
     if (counts.size > 30 || counts.size === rows.length) continue;
     out.push('', `#### Levels of \`${columns[i]}\``, [...counts].map(([k, n]) => `${k}: ${n}`).join('; '));
     if (counts.size <= 12 && numIdx.length) {
       out.push(`Numeric columns by \`${columns[i]}\` (mean ± SD, n):`);
       for (const j of numIdx.slice(0, 8)) {
-        const parts = [...counts.keys()].map(lv => { const s = stats(rows.filter(r => (r[i] ?? '(blank)') === lv).map(r => r[j])); return s ? `${lv}: ${fmt(s.mean)} ± ${fmt(s.sd)} (n=${s.n})` : null; }).filter(Boolean);
+        const parts = [...counts.keys()].map(lv => { const s = stats(rows.filter((r, k) => (drows[k][i] ?? '(blank)') === lv).map(r => r[j])); return s ? `${lv}: ${fmt(s.mean)} ± ${fmt(s.sd)} (n=${s.n})` : null; }).filter(Boolean);
         out.push(`- ${columns[j]} — ${parts.join('; ')}`);
       }
     }
   }
   const csv = rs => [columns, ...rs].map(r => r.map(v => v == null ? '' : /[",\n]/.test(String(v)) ? `"${String(v).replace(/"/g, '""')}"` : v).join(',')).join('\n');
-  if (rows.length <= 400) out.push('', '#### Full data (CSV)', '```csv', csv(rows), '```');
-  else out.push('', `#### First 40 of ${rows.length} rows (statistics should be run in Thistle Plot on the full table)`, '```csv', csv(rows.slice(0, 40)), '```');
+  if (rows.length <= 400) out.push('', '#### Full data (CSV)', '```csv', csv(drows), '```');
+  else out.push('', `#### First 40 of ${rows.length} rows (statistics should be run in Thistle Plot on the full table)`, '```csv', csv(drows.slice(0, 40)), '```');
   return out.join('\n');
 }
 

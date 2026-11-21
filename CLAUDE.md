@@ -70,9 +70,26 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
 - Re-review fixes (v0.6.0, `tests/review.e2e.cjs` "re-review" block): `findTable` matches a name with an extension
   exactly and a bare name only when unique (ambiguous → error); the wide layout refuses a control that is not a chosen
   column; the counts layout validates each source count (whole number ≥ 0; blank, text, fractional, negative → error)
-  and notes absent combinations as 0; a long two-way ANOVA needs two factor columns, and the bridge refuses nA/nB
+  and notes absent combinations as 0 (maintainer's rule; an explicit-zero policy was proposed and declined); a long two-way ANOVA needs two factor columns, and the bridge refuses nA/nB
   options that differ from the data; `typed()` in `js/ingest.js` keeps leading-zero integers (001) as text; rows with
   no subject ID are noted; an option label TP does not have throws (was a warning with defaults).
+- v0.6.1 (PR #1): duplicate exact file names and ambiguous option labels throw; wide two-way ANOVA keeps explicit nA/nB
+  (checked against the data only for the long layout); `importTable` stores `originalText` [row, col, text] for cells
+  whose typed value changes their spelling, except missing markers; in measurement-like (mostly decimal) columns only
+  spellings that collide (1.1 and 1.10 read as the same number) are kept, so subjects never merge, and
+  `buildG` reads it through `cat(row, col)` only for category reads (subject, group, rows, cols, label, filter, survival
+  group); measurements always read the typed cell (a filtered or case-twin value column keeps "1,000" as 1000). Filter values match by exact, case-sensitive
+  text first; only without one may they match ignoring case, then by number, each only for a single spelling ("s2" → "S2",
+  "2.0" → 2); no match or two spellings → throw (S1 never pulls in s1, 1.10 never pulls in 1.1). Each filter value is resolved
+  against its whole column; matches are unioned within a column and intersected across columns (order-independent);
+  an empty intersection throws. Column names and
+  control groups use `pickName` (exact name first; case-insensitive only when unique, else throw). Long-layout observations
+  are assigned by level tuple (`cellOf`, cell index), never by the joined display name (labels are bracketed if two would
+  read the same); `levels()` refuses a level repeated in order / orderA / orderB / orderRows. Wide `columns` and matrix
+  `groups` refuse a column (resolved index) listed twice; rows without a subject ID never enter the per-subject cells.
+  Identity across the suite: `readStatsTable` reads Flow's sample-name column as text; `profileTable` shows the kept
+  spellings to the model (unique counts, levels, CSV; numeric summaries stay typed); the .xlsx writer keeps leading-zero
+  and >15-significant-digit numbers as text (`asNumber`).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

@@ -39,13 +39,16 @@ export const tableToTsv = t => [t.header, ...t.rows].map(r => r.map(c => String(
 const xmlText = s => esc(String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')).replace(/&#39;/g, '&apos;');
 const colName = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = String.fromCharCode(65 + m) + s; i = Math.floor((i - 1) / 26); } return s; };
 const NUM = /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i;
+// A cell becomes an Excel number only if Excel will show the same value: identifiers with leading zeros (001) and numbers
+// with more than 15 significant digits (9007199254740993 would become ...992) stay text (v0.6.1, wider review).
+const asNumber = s => NUM.test(s) && !/^[-+]?0\d/.test(s) && s.replace(/e.*$/i, '').replace(/[^\d]/g, '').replace(/^0+/, '').length <= 15;
 
 function sheetXml(header, rows) {
   const ncol = Math.max(header.length, ...rows.map(r => r.length));
   const width = c => Math.min(60, Math.max(8, ...[header, ...rows].map(r => String(r[c] ?? '').split('\n').reduce((m, l) => Math.max(m, l.length), 0) * 1.1)));
   const cell = (v, r, c, style) => {
     const ref = colName(c) + (r + 1), s = String(v ?? '');
-    if (style !== 1 && NUM.test(s.trim())) return `<c r="${ref}" s="2"><v>${+s.trim()}</v></c>`;
+    if (style !== 1 && asNumber(s.trim())) return `<c r="${ref}" s="2"><v>${+s.trim()}</v></c>`;
     return `<c r="${ref}" t="inlineStr" s="${style}"><is><t xml:space="preserve">${xmlText(s)}</t></is></c>`;
   };
   const rowXml = (r, i, style) => `<row r="${i + 1}">${Array.from({ length: ncol }, (_, c) => cell(r[c], i, c, style)).join('')}</row>`;
