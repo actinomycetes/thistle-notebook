@@ -77,7 +77,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   (checked against the data only for the long layout); `importTable` stores `originalText` [row, col, text] for cells
   whose typed value changes their spelling, except missing markers; in measurement-like (mostly decimal) columns only
   spellings that collide (1.1 and 1.10 read as the same number) are kept, so subjects never merge, and
-  `buildG` uses it for category columns (subject, group, rows, cols, label, filter). Filter values match by exact, case-sensitive
+  `buildG` reads it through `cat(row, col)` only for category reads (subject, group, rows, cols, label, filter, survival
+  group); measurements always read the typed cell (a filtered or case-twin value column keeps "1,000" as 1000). Filter values match by exact, case-sensitive
   text first; only without one may they match ignoring case, then by number, each only for a single spelling ("s2" → "S2",
   "2.0" → 2); no match or two spellings → throw (S1 never pulls in s1, 1.10 never pulls in 1.1). Each filter value is resolved
   against its whole column; matches are unioned within a column and intersected across columns (order-independent);

@@ -211,6 +211,22 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(mf.a.error && mf.b.error && /no rows/i.test(mf.a.error) && /no rows/i.test(mf.b.error), 'ID S1 + Site South selects nothing in either order (S1 was swapped for s1 when Site came first) ' + JSON.stringify([mf.a, mf.b]));
   ok(!mf.c.error && JSON.stringify(mf.c) === JSON.stringify(mf.d) && JSON.stringify(mf.c.names) === '["s1"]' && JSON.stringify(mf.c.vals) === '[[3],[5]]', 'ID s1 + Site South gives the same subject and values in either order ' + JSON.stringify([mf.c, mf.d]));
   ok(mf.e.error && /1\.100/.test(mf.e.error) && /could mean/.test(mf.e.error), 'a site filter cannot make an ambiguous 1.100 resolve to one subject ' + JSON.stringify(mf.e));
+  // independent review: a measurement column used as a filter, or one whose name differs only in case from the subject
+  // column, keeps its typed numbers ("1,000" is 1000), so no pair is lost
+  const meas = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const t = (await parseFile(new File(['ID,Cond,Y\nP1,A,"1,000"\nP1,B,1100\nP2,A,900\nP2,B,1001\n'], 'm.csv'), {})).tables.m;
+    const t2 = (await parseFile(new File(['id,Cond,ID\nP1,A,"1,000"\nP1,B,1100\nP2,A,900\nP2,B,1001\n'], 'm2.csv'), {})).tables.m2;
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const pick = b => ({ names: b.G.rowNames, vals: b.G.groups.map(g => g.data.map(x => x[0])), notes: b.notes });
+    return { plain: pick(buildG(spec, t)), filt: pick(buildG({ ...spec, filter: { Y: ['1,000', '1100', '900', '1001'] } }, t)),
+      cased: pick(buildG({ ...spec, subject: 'id', value: 'ID' }, t2)) };
+  });
+  ok(JSON.stringify(meas.plain.vals) === '[[1000,900],[1100,1001]]', 'unfiltered: 1,000 is read as 1000 ' + JSON.stringify(meas.plain.vals));
+  ok(JSON.stringify(meas.filt.vals) === JSON.stringify(meas.plain.vals) && JSON.stringify(meas.filt.names) === JSON.stringify(meas.plain.names) && !meas.filt.notes.some(n => /left out/.test(n)),
+    'filtering a measurement column by all its values gives the same table, two complete pairs, no dropped rows ' + JSON.stringify(meas.filt));
+  ok(JSON.stringify(meas.cased.vals) === '[[1000,900],[1100,1001]]' && !meas.cased.notes.some(n => /left out/.test(n)), 'subject "id" and value "ID" keep the measurement typed ' + JSON.stringify(meas.cased));
   // the same rule for column names and control groups
   r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
     [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);

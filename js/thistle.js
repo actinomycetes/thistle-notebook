@@ -65,15 +65,13 @@ export function buildG(spec, table) {
     return i;
   };
   let rows = table.rows;
-  if (table.originalText?.length) {
-    const categorical = new Set([].concat(spec.subject || [], spec.group || [], spec.rows || [], spec.cols || [], spec.label || [], Object.keys(spec.filter || {})).map(norm));
-    rows = rows.slice();
-    for (const [r, c, value] of table.originalText) {
-      if (!categorical.has(norm(cols[c]))) continue;
-      if (rows[r] === table.rows[r]) rows[r] = rows[r].slice();
-      rows[r][c] = value;
-    }
-  }
+  // Category reads (subjects, groups, filters, labels, count rows/columns) use cat(row, col): the spelling from the file
+  // where the importer kept one (1e3, 1.10), else the cell. Measurements always read the typed cell, so a value column
+  // that is also filtered, or named like the subject column in another case (id / ID), keeps "1,000" as 1000
+  // (v0.6.1, independent review: the spelling used to overwrite the cell and the pair was lost).
+  const orig = new Map();
+  for (const [r, c, value] of table.originalText || []) { const row = table.rows[r]; if (row) (orig.get(row) || orig.set(row, new Map()).get(row)).set(c, value); }
+  const cat = (row, c) => { const m = orig.get(row); return m && m.has(c) ? m.get(c) : row[c]; };
   // Filter values (v0.6.1, independent review): a value selects the cells with exactly its text (trimmed, case-sensitive,
   // because S1 and s1 are different subjects). Only when no cell has that text may it match ignoring case ("female" →
   // "Female"), and then by number ("2.0" → the stored 2), each only if it finds a single spelling in the column; "1.10"
@@ -86,17 +84,17 @@ export function buildG(spec, table) {
     for (const [k, v] of filters) {
       const i = ci(k), picks = new Set();
       for (const w of [].concat(v).map(x => String(x).trim())) {
-        const exact = rows.filter(r => text(r[i]) === w);
+        const exact = rows.filter(r => text(cat(r, i)) === w);
         if (exact.length) { exact.forEach(r => picks.add(r)); continue; }
         const n = w === '' ? NaN : Number(w);
         let found = false;
-        for (const same of [c => text(c) != null && norm(c) === norm(w),                                 // ignoring case
-          c => Number.isFinite(n) && c != null && String(c).trim() !== '' && Number(c) === n]) {           // by number
-          const hits = rows.filter(r => same(r[i])), spellings = [...new Set(hits.map(r => text(r[i])))];
+        for (const same of [r => text(cat(r, i)) != null && norm(cat(r, i)) === norm(w),               // ignoring case
+          r => Number.isFinite(n) && typeof r[i] === 'number' && r[i] === n]) {                             // by number (typed cell)
+          const hits = rows.filter(same), spellings = [...new Set(hits.map(r => text(cat(r, i))))];
           if (spellings.length === 1) { hits.forEach(r => picks.add(r)); found = true; break; }
           if (spellings.length > 1) { problems.push(`"${cols[i]}": "${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`); found = true; break; }
         }
-        if (!found) problems.push(`"${cols[i]}": no rows with "${w}" (values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')})`);
+        if (!found) problems.push(`"${cols[i]}": no rows with "${w}" (values present: ${[...new Set(rows.map(r => cat(r, i)).filter(x => x != null).map(String))].slice(0, 20).join(', ')})`);
       }
       keep.push(picks);
     }
@@ -108,7 +106,7 @@ export function buildG(spec, table) {
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);
   const cell = v => (num(v) ?? '');
   const levels = (i, order) => {
-    const seen = []; rows.forEach(r => { const k = r[i] == null ? null : String(r[i]); if (k != null && !seen.includes(k)) seen.push(k); });
+    const seen = []; rows.forEach(r => { const v = cat(r, i), k = v == null ? null : String(v); if (k != null && !seen.includes(k)) seen.push(k); });
     if (order) { const o = order.map(String); return [...o.filter(x => seen.includes(x)), ...seen.filter(x => !o.includes(x))]; }
     return seen;
   };
@@ -122,7 +120,7 @@ export function buildG(spec, table) {
     if (!gcols.length || gcols[0] < 0) throw new Error('"group" column is required for the long layout.');
     if (spec.test === 'anova2' && gcols.length !== 2) throw new Error('A two-way ANOVA in the long layout needs two factor columns in "group" (for example ["Genotype", "Treatment"]), so that the design comes from the data.');
     if (PAIRED_TESTS.includes(spec.test) && si < 0) throw new Error('A paired test in the long layout needs a "subject" column that says which measurements belong to the same subject (animal, patient, experiment). Without it the rows would be paired by their order in the file.');
-    const key = r => gcols.map(i => r[i] == null ? null : String(r[i]));
+    const key = r => gcols.map(i => cat(r, i) == null ? null : String(cat(r, i)));
     let names;
     if (gcols.length === 2) { // two-way: A-major order, as Thistle Plot's two-way ANOVA expects
       const A = levels(gcols[0], spec.orderA), B = levels(gcols[1], spec.orderB);
@@ -134,10 +132,10 @@ export function buildG(spec, table) {
     const valid = rows.filter(r => gname(r) != null && num(r[vi]) != null);
     if (si >= 0) {
       const subjects = levels(si);
-      const noId = valid.filter(r => r[si] == null || String(r[si]).trim() === '').length;
+      const noId = valid.filter(r => cat(r, si) == null || String(cat(r, si)).trim() === '').length;
       if (noId) notes.push(`${noId} row(s) with no subject ID were left out.`);
       const cellVals = new Map();
-      valid.forEach(r => { const k = String(r[si]) + '\u0000' + gname(r); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
+      valid.forEach(r => { const k = String(cat(r, si)) + '\u0000' + gname(r); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
       // One value per subject and group: repeated (technical) measurements are averaged, so the subject stays the unit
       // of analysis (v0.5.0: repeats became extra pairs and inflated n and the degrees of freedom).
       const repeated = [...cellVals.values()].filter(v => v.length > 1).length;
@@ -160,13 +158,13 @@ export function buildG(spec, table) {
       if (k > 0) cs = [cs[k], ...cs.filter((_, j) => j !== k)]; }
     const li = spec.label ? ci(spec.label) : -1;
     const keep = rows.filter(r => cs.some(i => num(r[i]) != null));
-    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(r[li] ?? `Row ${k + 1}`) : `Row ${k + 1}`);
+    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(cat(r, li) ?? `Row ${k + 1}`) : `Row ${k + 1}`);
     G.groups = cs.map(i => ({ name: cols[i], reps: ['Value'], data: keep.map(r => [cell(r[i])]) }));
   } else if (layout === 'xy') {
     const xi = ci(spec.x), yi = ci(spec.y), li = spec.label ? ci(spec.label) : -1;
     const keep = rows.filter(r => num(r[xi]) != null && num(r[yi]) != null);
     if (keep.length < rows.length) notes.push(`${rows.length - keep.length} row(s) with a missing X or Y were left out.`);
-    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(r[li]) : `Point ${k + 1}`);
+    G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(cat(r, li)) : `Point ${k + 1}`);
     G.groups = [xi, yi].map(i => ({ name: cols[i], reps: ['Value'], data: keep.map(r => [num(r[i])]) }));
   } else if (layout === 'counts') {
     const ri = ci(spec.rows), cj = ci(spec.cols), ni = spec.count ? ci(spec.count) : -1;
@@ -179,8 +177,8 @@ export function buildG(spec, table) {
       if (Number.isInteger(x) && x >= 0) return x;
       bad.push(`row ${k + 1} (${r_label(k)}): ${v == null || String(v).trim() === '' ? 'blank' : JSON.stringify(v)}`); return 0;
     };
-    const r_label = k => `${rows[k][ri]} × ${rows[k][cj]}`;
-    rows.forEach((r, k) => { const a = R.indexOf(String(r[ri])), b = C.indexOf(String(r[cj])); if (a < 0 || b < 0) return;
+    const r_label = k => `${cat(rows[k], ri)} × ${cat(rows[k], cj)}`;
+    rows.forEach((r, k) => { const a = R.indexOf(String(cat(r, ri))), b = C.indexOf(String(cat(r, cj))); if (a < 0 || b < 0) return;
       seen[a][b] = true; tab[a][b] += ni >= 0 ? count(r[ni], k) : 1; });
     if (bad.length) throw new Error(`Counts in "${cols[ni]}" must be whole numbers of 0 or more: ${bad.slice(0, 5).join('; ')}${bad.length > 5 ? `; and ${bad.length - 5} more` : ''}. Fix the file or use the raw rows instead of counts.`);
     if (ni >= 0) { const absent = []; R.forEach((a, i) => C.forEach((c, j) => { if (!seen[i][j]) absent.push(`${a} × ${c}`); }));
@@ -189,17 +187,17 @@ export function buildG(spec, table) {
     G.groups = C.map((c, b) => ({ name: c, reps: ['Value'], data: R.map((_, a) => [tab[a][b]]) }));
   } else if (layout === 'survival') {
     const ti = ci(spec.time), ei = ci(spec.event), gi = ci(spec.group);
-    const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && r[gi] != null);
+    const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && cat(r, gi) != null);
     const names = putFirst(levels(gi, spec.order), spec.control);
     G.nRows = keep.length; G.rowNames = keep.map((r, k) => `Subject ${k + 1}`);
     G.groups = [{ name: cols[ti], reps: ['Value'], data: keep.map(r => [num(r[ti])]) },
-      ...names.map(n => ({ name: n, reps: ['Value'], data: keep.map(r => [String(r[gi]) === n ? (num(r[ei]) ? 1 : 0) : '']) }))];
+      ...names.map(n => ({ name: n, reps: ['Value'], data: keep.map(r => [String(cat(r, gi)) === n ? (num(r[ei]) ? 1 : 0) : '']) }))];
   } else if (layout === 'matrix') {
     const li = ci(spec.label), entries = Object.entries(spec.groups || {});
     if (!entries.length) throw new Error('"groups" ({name: [replicate columns]}) is required for the matrix layout.');
     const nReps = Math.max(...entries.map(([, c]) => c.length));
     const idx = entries.map(([n, c]) => [n, c.map(ci)]);
-    G.nRows = rows.length; G.rowNames = rows.map((r, k) => String(r[li] ?? `Feature ${k + 1}`));
+    G.nRows = rows.length; G.rowNames = rows.map((r, k) => String(cat(r, li) ?? `Feature ${k + 1}`));
     if (['pca', 'heatmap'].includes(spec.test)) { // Thistle Plot treats each column group as one sample here
       G.nReps = 1;
       G.groups = idx.flatMap(([n, is]) => is.map(i => ({ name: `${n} · ${cols[i]}`, reps: ['Value'], data: rows.map(r => [cell(r[i])]) })));
