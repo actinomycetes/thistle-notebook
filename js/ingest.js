@@ -154,11 +154,20 @@ function typed(v) {
   const n = Number(s.replace(/,(?=\d{3}\b)/g, ''));
   return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
 }
+// Keeps the spelling of cells whose typed value would change it (1e3 → 1000), so category columns (subjects, groups)
+// can use the original text (buildG). Missing-value markers (NA, n/a, -) stay missing. Columns that look like
+// measurements (most filled cells are decimals) keep nothing, so large tables and saved notebooks do not grow (v0.6.1).
+const MISSING = /^(na|n\/a|nan|null|none|-)$/i;
 function importTable(columns, sourceRows) {
   const originalText = [];
+  const decimalCol = columns.map((_, c) => {
+    let filled = 0, dec = 0;
+    for (const row of sourceRows) { const t = row[c] == null ? '' : String(row[c]).trim(); if (!t || MISSING.test(t)) continue; filled++; if (/^[-+]?\d*\.\d+(e[-+]?\d+)?%?$/i.test(t)) dec++; }
+    return filled > 0 && dec / filled > 0.5;
+  });
   const rows = sourceRows.map((row, r) => columns.map((_, c) => {
     const raw = row[c], value = typed(raw);
-    if (typeof raw === 'string' && raw.trim() && raw.trim() !== String(value ?? '')) originalText.push([r, c, raw.trim()]);
+    if (!decimalCol[c] && value !== null && typeof raw === 'string' && raw.trim() && raw.trim() !== String(value)) originalText.push([r, c, raw.trim()]);
     return value;
   }));
   return originalText.length ? { columns, rows, originalText } : { columns, rows };

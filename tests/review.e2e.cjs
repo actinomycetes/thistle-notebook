@@ -106,8 +106,6 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', 0], ['B', 'yes', 0], ['B', 'no', 10]]));
   ok(!r.error && JSON.stringify(r.G.groups.map(g => g.data.map(x => x[0]))) === '[[10,0],[0,10]]', 'N1: a genuine 0 is kept ' + (r.error || ''));
   r = await run(cspec, cnt([['A', 'yes', 10], ['B', 'yes', 0], ['B', 'no', 10]]));
-  ok(/Missing pre-counted/.test(r.error || ''), 'missing combinations need an explicit policy');
-  r = await run({ ...cspec, omittedCounts: 'zero' }, cnt([['A', 'yes', 10], ['B', 'yes', 0], ['B', 'no', 10]]));
   ok(!r.error && (r.notes || []).some(n => /A × no/.test(n) && /counted as 0/.test(n)), 'N1: an absent combination counts as 0 and the notes say which ' + JSON.stringify(r.notes || r.error));
 
   // N2: an explicit file name must match exactly; a bare name only when it is unique
@@ -156,10 +154,15 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const {buildG} = await import('./js/thistle.js');
     const file = new File(['ID,Group,Y\n1e3,A,1e3\n1000,A,2\nNA,A,3\n'], 'identity.csv');
     const parsed = await parseFile(file, {});
-    return buildG({layout:'long',subject:'ID',group:'Group',value:'Y'},parsed.tables.identity).G;
+    const out = buildG({layout:'long',subject:'ID',group:'Group',value:'Y'},parsed.tables.identity);
+    // measurement-like columns (mostly decimals) keep no original text, so large tables do not grow
+    const big = await parseFile(new File(['G,Y\n' + Array.from({ length: 500 }, (_, i) => `g${i % 3},${(i / 7).toFixed(2)}0`).join('\n')], 'big.csv'), {});
+    return { G: out.G, notes: out.notes, bigOrig: (big.tables.big.originalText || []).length };
   });
-  ok(JSON.stringify(identity.rowNames) === '["1e3","1000","NA"]' && identity.groups[0].data[0][0] === 1000,
-    'categorical spellings survive while scientific-notation measurements stay numeric');
+  ok(JSON.stringify(identity.G.rowNames) === '["1e3","1000"]' && identity.G.groups[0].data[0][0] === 1000,
+    'categorical spellings survive while scientific-notation measurements stay numeric ' + JSON.stringify(identity.G.rowNames));
+  ok(identity.notes.some(n => /1 row.*no subject/i.test(n)), 'NA in a subject column stays missing (not a subject called "NA") and is reported');
+  ok(identity.bigOrig === 0, 'a column of decimals stores no original text (saved notebooks do not grow): ' + identity.bigOrig);
 
   const six = ['A1','A2','A3','B1','B2','B3'];
   const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));

@@ -70,9 +70,13 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
 - Re-review fixes (v0.6.0, `tests/review.e2e.cjs` "re-review" block): `findTable` matches a name with an extension
   exactly and a bare name only when unique (ambiguous → error); the wide layout refuses a control that is not a chosen
   column; the counts layout validates each source count (whole number ≥ 0; blank, text, fractional, negative → error)
-  and requires an explicit zero policy for sparse pre-counted tables; a long two-way ANOVA needs two factor columns, and the bridge refuses nA/nB
+  and notes absent combinations as 0 (maintainer's rule; an explicit-zero policy was proposed and declined); a long two-way ANOVA needs two factor columns, and the bridge refuses nA/nB
   options that differ from the data; `typed()` in `js/ingest.js` keeps leading-zero integers (001) as text; rows with
   no subject ID are noted; an option label TP does not have throws (was a warning with defaults).
+- v0.6.1 (PR #1): duplicate exact file names and ambiguous option labels throw; wide two-way ANOVA keeps explicit nA/nB
+  (checked against the data only for the long layout); `importTable` stores `originalText` [row, col, text] for cells
+  whose typed value changes their spelling, except missing markers and measurement-like (mostly decimal) columns, and
+  `buildG` uses it for category columns (subject, group, rows, cols, label, filter).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

@@ -148,7 +148,6 @@ export function buildG(spec, table) {
       seen[a][b] = true; tab[a][b] += ni >= 0 ? count(r[ni], k) : 1; });
     if (bad.length) throw new Error(`Counts in "${cols[ni]}" must be whole numbers of 0 or more: ${bad.slice(0, 5).join('; ')}${bad.length > 5 ? `; and ${bad.length - 5} more` : ''}. Fix the file or use the raw rows instead of counts.`);
     if (ni >= 0) { const absent = []; R.forEach((a, i) => C.forEach((c, j) => { if (!seen[i][j]) absent.push(`${a} × ${c}`); }));
-      if (absent.length && spec.omittedCounts !== 'zero') throw new Error(`Missing pre-counted combinations: ${absent.join(', ')}. Supply explicit counts, or set omittedCounts to "zero" for a sparse table with known observed zeros.`);
       if (absent.length) notes.push(`No row for ${absent.join(', ')}: counted as 0.`); }
     G.nRows = R.length; G.rowNames = R;
     G.groups = C.map((c, b) => ({ name: c, reps: ['Value'], data: R.map((_, a) => [tab[a][b]]) }));
