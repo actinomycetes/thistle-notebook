@@ -56,7 +56,7 @@ Layouts:
 - long: one row per observation. "group": column (or [factorA, factorB] for anova2), "value": column, "subject": column that matches paired/repeated measurements (REQUIRED for paired tests; repeated measurements of one subject in one group are averaged), optional "order": [group names].
 - wide: "columns": [one column per group]; rows are subjects (paired tests) or just observations. Optional "label": row-name column.
 - xy: "x": column, "y": column, optional "label".
-- counts: raw categorical data "rows": column, "cols": column (cross-tabulated); or pre-counted with "rows", "cols", "count" (counts must be whole numbers of 0 or more; a combination with no row counts as 0).
+- counts: raw categorical data "rows": column, "cols": column (cross-tabulated); or pre-counted with "rows", "cols", "count" (counts must be whole numbers of 0 or more; supply each combination explicitly, or set "omittedCounts":"zero" only if the user confirms omitted combinations are observed zeros).
 - survival: "time": column, "event": column (1 = event, 0 = censored), "group": column.
 - matrix: "label": feature/gene column, "groups": {"Control": [replicate columns…], "Treated": [...]}.
 "control" puts that group first (TP compares against the first group by default). "options" are optional: keys are TP option labels (e.g. "Post-hoc correction", "Comparisons", "Normalization", "Multiple-comparison correction"), values are option names; use only labels that exist for the test, because an unknown option stops the analysis. For a two-way ANOVA in the long layout give both factor columns in "group"; the factor sizes come from the data, so do not set them.
