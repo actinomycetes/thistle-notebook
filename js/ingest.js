@@ -154,11 +154,20 @@ function typed(v) {
   const n = Number(s.replace(/,(?=\d{3}\b)/g, ''));
   return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
 }
+function importTable(columns, sourceRows) {
+  const originalText = [];
+  const rows = sourceRows.map((row, r) => columns.map((_, c) => {
+    const raw = row[c], value = typed(raw);
+    if (typeof raw === 'string' && raw.trim() && raw.trim() !== String(value ?? '')) originalText.push([r, c, raw.trim()]);
+    return value;
+  }));
+  return originalText.length ? { columns, rows, originalText } : { columns, rows };
+}
 async function readCsv(file) {
   if (!window.Papa) throw new Error('CSV reader did not load (PapaParse from cdnjs).');
   const res = window.Papa.parse((await file.text()).replace(/^﻿/, ''), { skipEmptyLines: 'greedy' });
   const [head, ...rows] = res.data;
-  return { columns: head.map((c, i) => String(c).trim() || `col${i + 1}`), rows: rows.map(r => head.map((_, i) => typed(r[i]))) };
+  return importTable(head.map((c, i) => String(c).trim() || `col${i + 1}`), rows);
 }
 async function readXlsx(file) {
   const z = await unzip(await file.arrayBuffer()), P = s => new DOMParser().parseFromString(s, 'application/xml');
@@ -184,8 +193,7 @@ async function readXlsx(file) {
     const rows = Array.from(grid, r => r || []).filter(r => r.some(v => v != null && v !== ''));
     if (!rows.length) continue;
     const head = rows[0], n = Math.max(...rows.map(r => r.length));
-    out[sh.getAttribute('name')] = { columns: Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`),
-      rows: rows.slice(1).map(r => Array.from({ length: n }, (_, i) => typed(r[i]))) };
+    out[sh.getAttribute('name')] = importTable(Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows.slice(1));
   }
   return out;
 }
