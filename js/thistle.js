@@ -26,7 +26,9 @@ export function findTable(spec, datasets) {
   const want = norm(spec.dataset), stem = n => norm(n).replace(/\.\w+$/, '');
   let ds = null;
   if (want) {
-    ds = datasets.find(d => norm(d.name) === want) || null;
+    const exact = datasets.filter(d => norm(d.name) === want);
+    if (exact.length > 1) throw new Error(`Multiple loaded datasets match "${spec.dataset}". Give them unique filenames before running this analysis.`);
+    ds = exact[0] || null;
     if (!ds && !/\.\w+$/.test(want)) {
       const hits = datasets.filter(d => stem(d.name) === want);
       if (hits.length > 1) throw new Error(`"${spec.dataset}" could mean ${hits.map(d => d.name).join(' or ')}; name the file with its extension.`);
@@ -53,6 +55,15 @@ export function buildG(spec, table) {
     return i;
   };
   let rows = table.rows;
+  if (table.originalText?.length) {
+    const categorical = new Set([].concat(spec.subject || [], spec.group || [], spec.rows || [], spec.cols || [], spec.label || [], Object.keys(spec.filter || {})).map(norm));
+    rows = rows.slice();
+    for (const [r, c, value] of table.originalText) {
+      if (!categorical.has(norm(cols[c]))) continue;
+      if (rows[r] === table.rows[r]) rows[r] = rows[r].slice();
+      rows[r][c] = value;
+    }
+  }
   for (const [k, v] of Object.entries(spec.filter || {})) {
     const i = ci(k), allowed = [].concat(v).map(norm);
     rows = rows.filter(r => allowed.includes(norm(r[i])));
@@ -137,6 +148,7 @@ export function buildG(spec, table) {
       seen[a][b] = true; tab[a][b] += ni >= 0 ? count(r[ni], k) : 1; });
     if (bad.length) throw new Error(`Counts in "${cols[ni]}" must be whole numbers of 0 or more: ${bad.slice(0, 5).join('; ')}${bad.length > 5 ? `; and ${bad.length - 5} more` : ''}. Fix the file or use the raw rows instead of counts.`);
     if (ni >= 0) { const absent = []; R.forEach((a, i) => C.forEach((c, j) => { if (!seen[i][j]) absent.push(`${a} × ${c}`); }));
+      if (absent.length && spec.omittedCounts !== 'zero') throw new Error(`Missing pre-counted combinations: ${absent.join(', ')}. Supply explicit counts, or set omittedCounts to "zero" for a sparse table with known observed zeros.`);
       if (absent.length) notes.push(`No row for ${absent.join(', ')}: counted as 0.`); }
     G.nRows = R.length; G.rowNames = R;
     G.groups = C.map((c, b) => ({ name: c, reps: ['Value'], data: R.map((_, a) => [tab[a][b]]) }));
@@ -239,15 +251,6 @@ export class ThistlePlot extends ThistleApp {
       return true;
     };
     const opts = { ...(spec.options || {}) };
-    if (spec.test === 'anova2') { // the factor sizes come from the table; an option may only repeat them (v0.6.0)
-      for (const [key, v] of Object.entries(opts)) {
-        const which = /^opt-na$|factor a|\bna\b/i.test(key) ? 'A' : /^opt-nb$|factor b|\bnb\b/i.test(key) ? 'B' : null;
-        if (!which) continue;
-        const want = which === 'A' ? spec._nA : spec._nB;
-        if (want != null && Number(v) !== want) throw new Error(`Factor ${which} has ${want} levels in the data, but the options ask for ${v}. The design is taken from the data (A = ${spec._nA}, B = ${spec._nB} levels).`);
-        delete opts[key];
-      }
-    }
     if (spec.test === 'anova2') for (const [id, v, lab] of [['opt-nA', spec._nA, 'Factor A levels (nA)'], ['opt-nB', spec._nB, 'Factor B levels (nB)']]) {
       const el = v && doc.getElementById(id);
       if (el) { setEl(el, v); applied.push(`${lab} = ${v}`); await sleep(30); }
@@ -260,7 +263,17 @@ export class ThistlePlot extends ThistleApp {
     }
     const order = Object.entries(opts).filter(([l]) => !l.startsWith('__')).sort(([a], [b]) => (isCmp(b) ? 1 : 0) - (isCmp(a) ? 1 : 0));
     for (const [label, v] of order) {
-      const found = ThistlePlot.readOptions(doc).find(o => norm(o.label).includes(norm(label)) || norm(o.id) === norm(label));
+      const menu = ThistlePlot.readOptions(doc);
+      const query = norm(label);
+      const exact = menu.filter(o => norm(o.label) === query || norm(o.id) === query);
+      const matches = exact.length ? exact : menu.filter(o => query && norm(o.label).includes(query));
+      if (matches.length > 1) throw new Error(`Ambiguous option "${label}": ${matches.map(o => o.label).join(', ')}.`);
+      const found = matches[0];
+      if (spec.test === 'anova2' && ['opt-nA', 'opt-nB'].includes(found?.id)) {
+        const inferred = found.id === 'opt-nA' ? spec._nA : spec._nB;
+        if (inferred != null && Number(v) !== inferred) throw new Error(`${found.label} has ${inferred} levels in the data but the option asks for ${v}.`);
+        if (!Number.isInteger(Number(v)) || Number(v) < 2) throw new Error(`${found.label} requires a whole number of at least two.`);
+      }
       const el = found && doc.getElementById(found.id);
       if (!el) throw new Error(`Thistle Plot has no option "${label}" for this test (v0.6.0: it used to run with the default). Options: ${ThistlePlot.readOptions(doc).map(o => o.label).filter(Boolean).join(' | ')}.`);
       const res = setEl(el, v);
