@@ -18,13 +18,21 @@ export function parseSpecs(text) {
 const norm = s => String(s ?? '').trim().toLowerCase();
 const PAIRED_TESTS = ['ttest_rel', 'wilcoxon'];
 
-// The dataset a spec names: the exact file name, or the name without its extension ("mice" → "mice.csv"); never a
-// partial match, and never a different file just because it is the only one loaded (v0.5.0: "different.csv" ran on
-// "actual.csv"). With no dataset named and one loaded, that one is used and named in the notes (spec._datasetNote).
+// The dataset a spec names: a name with an extension must match exactly ("actual.xlsx" never runs on "actual.csv",
+// v0.6.0); a bare name ("mice") matches a file of that name with any extension only when exactly one does. Never a
+// partial match, and never a different file just because it is the only one loaded (v0.5.0). With no dataset named and
+// one loaded, that one is used and named in the notes (spec._datasetNote).
 export function findTable(spec, datasets) {
   const want = norm(spec.dataset), stem = n => norm(n).replace(/\.\w+$/, '');
   let ds = null;
-  if (want) ds = datasets.find(d => norm(d.name) === want) || datasets.find(d => stem(d.name) === stem(want)) || null;
+  if (want) {
+    ds = datasets.find(d => norm(d.name) === want) || null;
+    if (!ds && !/\.\w+$/.test(want)) {
+      const hits = datasets.filter(d => stem(d.name) === want);
+      if (hits.length > 1) throw new Error(`"${spec.dataset}" could mean ${hits.map(d => d.name).join(' or ')}; name the file with its extension.`);
+      ds = hits[0] || null;
+    }
+  }
   else if (datasets.length === 1) { ds = datasets[0]; spec._datasetNote = `Data: ${ds.name} (the only dataset loaded; no dataset was named).`; }
   if (!ds) throw new Error(want ? `Dataset "${spec.dataset}" is not loaded. Available: ${datasets.map(d => d.name).join(', ') || 'none'}.`
     : `Name the dataset to use ("dataset"). Available: ${datasets.map(d => d.name).join(', ') || 'none'}.`);
@@ -65,6 +73,7 @@ export function buildG(spec, table) {
   if (layout === 'long') {
     const gcols = [].concat(spec.group).map(ci), vi = ci(spec.value), si = spec.subject ? ci(spec.subject) : -1;
     if (!gcols.length || gcols[0] < 0) throw new Error('"group" column is required for the long layout.');
+    if (spec.test === 'anova2' && gcols.length !== 2) throw new Error('A two-way ANOVA in the long layout needs two factor columns in "group" (for example ["Genotype", "Treatment"]), so that the design comes from the data.');
     if (PAIRED_TESTS.includes(spec.test) && si < 0) throw new Error('A paired test in the long layout needs a "subject" column that says which measurements belong to the same subject (animal, patient, experiment). Without it the rows would be paired by their order in the file.');
     const key = r => gcols.map(i => r[i] == null ? null : String(r[i]));
     let names;
@@ -78,6 +87,8 @@ export function buildG(spec, table) {
     const valid = rows.filter(r => gname(r) != null && num(r[vi]) != null);
     if (si >= 0) {
       const subjects = levels(si);
+      const noId = valid.filter(r => r[si] == null || String(r[si]).trim() === '').length;
+      if (noId) notes.push(`${noId} row(s) with no subject ID were left out.`);
       const cellVals = new Map();
       valid.forEach(r => { const k = String(r[si]) + '\u0000' + gname(r); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
       // One value per subject and group: repeated (technical) measurements are averaged, so the subject stays the unit
@@ -97,7 +108,9 @@ export function buildG(spec, table) {
   } else if (layout === 'wide' || layout === 'single') {
     let cs = [].concat(spec.columns || []).map(ci);
     if (!cs.length) throw new Error('"columns" is required for the wide layout.');
-    if (spec.control) { const k = cs.findIndex(i => norm(cols[i]) === norm(spec.control)); if (k > 0) cs = [cs[k], ...cs.filter((_, j) => j !== k)]; }
+    if (spec.control != null) { const k = cs.findIndex(i => norm(cols[i]) === norm(spec.control));
+      if (k < 0) throw new Error(`Control "${spec.control}" is not one of the columns: ${cs.map(i => cols[i]).join(', ')}.`); // v0.6.0: was ignored
+      if (k > 0) cs = [cs[k], ...cs.filter((_, j) => j !== k)]; }
     const li = spec.label ? ci(spec.label) : -1;
     const keep = rows.filter(r => cs.some(i => num(r[i]) != null));
     G.nRows = keep.length; G.rowNames = keep.map((r, k) => li >= 0 ? String(r[li] ?? `Row ${k + 1}`) : `Row ${k + 1}`);
@@ -111,8 +124,20 @@ export function buildG(spec, table) {
   } else if (layout === 'counts') {
     const ri = ci(spec.rows), cj = ci(spec.cols), ni = spec.count ? ci(spec.count) : -1;
     const R = levels(ri, spec.orderRows), C = putFirst(levels(cj, spec.order), spec.control);
-    const tab = R.map(() => C.map(() => 0));
-    rows.forEach(r => { const a = R.indexOf(String(r[ri])), b = C.indexOf(String(r[cj])); if (a >= 0 && b >= 0) tab[a][b] += ni >= 0 ? (num(r[ni]) || 0) : 1; });
+    const tab = R.map(() => C.map(() => 0)), seen = R.map(() => C.map(() => false)), bad = [];
+    // Pre-counted data: each count must be a whole number >= 0 (v0.6.0: a blank became 0 and two 0.5 became 1 before
+    // Thistle Plot could check the table). A combination with no row at all counts as 0, and the notes say which.
+    const count = (v, k) => {
+      const x = typeof v === 'number' ? v : (v == null || String(v).trim() === '' ? NaN : Number(String(v).trim()));
+      if (Number.isInteger(x) && x >= 0) return x;
+      bad.push(`row ${k + 1} (${r_label(k)}): ${v == null || String(v).trim() === '' ? 'blank' : JSON.stringify(v)}`); return 0;
+    };
+    const r_label = k => `${rows[k][ri]} × ${rows[k][cj]}`;
+    rows.forEach((r, k) => { const a = R.indexOf(String(r[ri])), b = C.indexOf(String(r[cj])); if (a < 0 || b < 0) return;
+      seen[a][b] = true; tab[a][b] += ni >= 0 ? count(r[ni], k) : 1; });
+    if (bad.length) throw new Error(`Counts in "${cols[ni]}" must be whole numbers of 0 or more: ${bad.slice(0, 5).join('; ')}${bad.length > 5 ? `; and ${bad.length - 5} more` : ''}. Fix the file or use the raw rows instead of counts.`);
+    if (ni >= 0) { const absent = []; R.forEach((a, i) => C.forEach((c, j) => { if (!seen[i][j]) absent.push(`${a} × ${c}`); }));
+      if (absent.length) notes.push(`No row for ${absent.join(', ')}: counted as 0.`); }
     G.nRows = R.length; G.rowNames = R;
     G.groups = C.map((c, b) => ({ name: c, reps: ['Value'], data: R.map((_, a) => [tab[a][b]]) }));
   } else if (layout === 'survival') {
@@ -214,6 +239,15 @@ export class ThistlePlot extends ThistleApp {
       return true;
     };
     const opts = { ...(spec.options || {}) };
+    if (spec.test === 'anova2') { // the factor sizes come from the table; an option may only repeat them (v0.6.0)
+      for (const [key, v] of Object.entries(opts)) {
+        const which = /^opt-na$|factor a|\bna\b/i.test(key) ? 'A' : /^opt-nb$|factor b|\bnb\b/i.test(key) ? 'B' : null;
+        if (!which) continue;
+        const want = which === 'A' ? spec._nA : spec._nB;
+        if (want != null && Number(v) !== want) throw new Error(`Factor ${which} has ${want} levels in the data, but the options ask for ${v}. The design is taken from the data (A = ${spec._nA}, B = ${spec._nB} levels).`);
+        delete opts[key];
+      }
+    }
     if (spec.test === 'anova2') for (const [id, v, lab] of [['opt-nA', spec._nA, 'Factor A levels (nA)'], ['opt-nB', spec._nB, 'Factor B levels (nB)']]) {
       const el = v && doc.getElementById(id);
       if (el) { setEl(el, v); applied.push(`${lab} = ${v}`); await sleep(30); }
@@ -228,7 +262,7 @@ export class ThistlePlot extends ThistleApp {
     for (const [label, v] of order) {
       const found = ThistlePlot.readOptions(doc).find(o => norm(o.label).includes(norm(label)) || norm(o.id) === norm(label));
       const el = found && doc.getElementById(found.id);
-      if (!el) { unknown.push(`${label} = ${v}`); continue; }
+      if (!el) throw new Error(`Thistle Plot has no option "${label}" for this test (v0.6.0: it used to run with the default). Options: ${ThistlePlot.readOptions(doc).map(o => o.label).filter(Boolean).join(' | ')}.`);
       const res = setEl(el, v);
       if (res === true) { applied.push(`${found.label} = ${v}`); await sleep(30); continue; }
       const choices = el.tagName === 'SELECT' ? [...el.options].filter(o => !o.disabled).map(o => o.textContent.trim()).join(' | ') : '';

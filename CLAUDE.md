@@ -67,6 +67,12 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   applies "Comparisons" before other options, sets "vs control" when Dunnett is requested with a control, throws when a
   known option's choice is missing or disabled, and throws when TP's newest tab is an error (no `scard`); TF statistics
   are read with `readStatsTable` from `data-v` (full precision, blank = null).
+- Re-review fixes (v0.6.0, `tests/review.e2e.cjs` "re-review" block): `findTable` matches a name with an extension
+  exactly and a bare name only when unique (ambiguous → error); the wide layout refuses a control that is not a chosen
+  column; the counts layout validates each source count (whole number ≥ 0; blank, text, fractional, negative → error)
+  and notes absent combinations as 0; a long two-way ANOVA needs two factor columns, and the bridge refuses nA/nB
+  options that differ from the data; `typed()` in `js/ingest.js` keeps leading-zero integers (001) as text; rows with
+  no subject ID are noted; an option label TP does not have throws (was a warning with defaults).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

@@ -91,5 +91,63 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(st.rows[1][1] === null && st.rows[1][2] === null, '14: not-measured cells stay null, never 0');
   ok(st.rows[2][1] === 12.5 && st.rows[2][2] === 1250, '14: tables without data-v are still read from their text');
 
+  // ================= statistical re-review (TN v0.6.0) =================
+  // N1: pre-counted data: every source count must be a whole number >= 0; absent combinations count as 0 with a note
+  const cnt = rows => [ds('c.csv', ['Treat', 'Outcome', 'N'], rows)];
+  const cspec = { test: 'fisher', layout: 'counts', rows: 'Treat', cols: 'Outcome', count: 'N', dataset: 'c.csv' };
+  r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', ''], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(r.error && /blank/i.test(r.error), 'N1: a blank count is refused, not read as 0 ' + (r.error || ''));
+  r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', 0.5], ['A', 'no', 0.5], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(r.error && /0\.5/.test(r.error), 'N1: fractional counts are refused (two 0.5 became 1)');
+  r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', -2], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(r.error && /-2/.test(r.error), 'N1: negative counts are refused');
+  r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', 'many'], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(r.error && /many/.test(r.error), 'N1: text counts are refused');
+  r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', 0], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(!r.error && JSON.stringify(r.G.groups.map(g => g.data.map(x => x[0]))) === '[[10,0],[0,10]]', 'N1: a genuine 0 is kept ' + (r.error || ''));
+  r = await run(cspec, cnt([['A', 'yes', 10], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(!r.error && (r.notes || []).some(n => /A × no/.test(n) && /counted as 0/.test(n)), 'N1: an absent combination counts as 0 and the notes say which ' + JSON.stringify(r.notes || r.error));
+
+  // N2: an explicit file name must match exactly; a bare name only when it is unique
+  const two = [ds('actual.csv', ['G', 'Y'], [['a', 1], ['a', 2], ['b', 3], ['b', 4]])];
+  r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'actual.xlsx' }, two);
+  ok(r.error && /actual\.xlsx/.test(r.error), 'N2: "actual.xlsx" does not run on actual.csv');
+  r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'actual' }, two);
+  ok(!r.error && r.dataset === 'actual.csv', 'N2: a bare name that is unique still works ' + (r.error || ''));
+  r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'actual' }, [...two, ds('actual.xlsx', ['G', 'Y'], [['a', 9], ['b', 9]])]);
+  ok(r.error && /actual\.csv/.test(r.error) && /actual\.xlsx/.test(r.error), 'N2: an ambiguous bare name is refused and lists both files');
+
+  // N2: a wide control must be one of the columns (a misspelling ran Dunnett against the first column)
+  const wide = [ds('w.csv', ['T1', 'T2', 'Vehicle'], [[5, 7, 3], [6, 8, 4], [5.5, 7.5, 3.2], [6.2, 8.1, 3.9]])];
+  const wspec = { test: 'anova', layout: 'wide', columns: ['T1', 'T2', 'Vehicle'], dataset: 'w.csv', options: { 'Post-hoc correction': 'Dunnett' } };
+  r = await run({ ...wspec, control: 'Vehcile' }, wide);
+  ok(r.error && /Vehcile/.test(r.error), 'N2: a misspelt control is refused ' + (r.error || ''));
+  r = await run({ ...wspec, control: 'Vehicle' }, wide);
+  ok(/Dunnett, vs Vehicle \(2 comparisons\)/.test(r.text || ''), 'N2: control Vehicle gives Dunnett vs Vehicle, 2 comparisons ' + (r.error || ''));
+
+  // N3: factor sizes come from the table; conflicting options are refused; a long two-way needs two factor columns
+  r = await run({ test: 'anova2', layout: 'long', group: ['Geno', 'Treat'], value: 'Y', dataset: 'f.csv', options: { 'opt-nA': 3, 'opt-nB': 2 } }, [ds('f.csv', ['Geno', 'Treat', 'Y'], f04)]);
+  ok(r.error && /2/.test(r.error) && /3/.test(r.error), 'N3: options nA = 3, nB = 2 on a 2×3 table are refused (it fitted 3×2) ' + (r.error || ''));
+  r = await run({ test: 'anova2', layout: 'long', group: ['Geno', 'Treat'], value: 'Y', dataset: 'f.csv', options: { 'opt-nA': 2, 'opt-nB': 3 } }, [ds('f.csv', ['Geno', 'Treat', 'Y'], f04)]);
+  ok(!r.error && /1200\.500/.test(r.text || ''), 'N3: options that agree with the table are fine');
+  r = await run({ test: 'anova2', layout: 'long', group: 'Geno', value: 'Y', dataset: 'f.csv', options: { 'opt-nA': 2, 'opt-nB': 3 } }, [ds('f.csv', ['Geno', 'Treat', 'Y'], f04)]);
+  ok(r.error && /two/i.test(r.error), 'N3: a long two-way ANOVA with one factor column is refused');
+
+  // N4: subject IDs keep their text through import (001 and 1 are different subjects); rows without an ID are reported
+  const imp = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const f = new File(['ID,Cond,Y\n001,A,1\n1,A,2\n1,B,6\n001,B,4\n,A,5\n'], 'ids.csv', { type: 'text/csv' });
+    const res = await parseFile(f, {}); return Object.values(res.tables || {})[0] || res.table || res;
+  });
+  ok(imp.rows && imp.rows[0][0] === '001' && String(imp.rows[1][0]) === '1', 'N4: "001" stays "001" after import ' + JSON.stringify(imp.rows && imp.rows.slice(0, 2)));
+  r = await run({ test: 'ttest_rel', layout: 'long', group: 'Cond', value: 'Y', subject: 'ID', control: 'A', dataset: 'ids.csv' }, [{ name: 'ids.csv', tables: { ids: imp } }]);
+  ok(!r.error && JSON.stringify(r.G.rowNames) === '["001","1"]', 'N4: two subjects, 001 and 1 ' + (r.error || JSON.stringify(r.G?.rowNames)));
+  ok(/t statistic \| 7\.000/.test(r.text || '') || /t statistic \| -7\.000/.test(r.text || ''), 'N4: differences 3 and 4 give |t| = 7 (SciPy ttest_rel: t = 7.0, df 1)');
+  ok((r.notes || []).some(n => /1 row.*no subject/i.test(n)), 'N4: the row without a subject ID is reported ' + JSON.stringify(r.notes));
+
+  // unknown option names stop the run instead of using Thistle Plot's defaults
+  r = await run({ ...example, options: { 'Post-hoc correction': 'Dunnett', 'Confidence band': '99%' } }, M);
+  ok(r.error && /Confidence band/.test(r.error), 'options: an option Thistle Plot does not have is refused ' + (r.error || ''));
+
   await b.close(); process.exit(fails ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

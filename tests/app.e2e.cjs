@@ -23,7 +23,7 @@ function chatReply(body) {
   const sys = body.messages[0].content, last = body.messages[body.messages.length - 1].content;
   if (sys.startsWith('You help a scientist find literature')) return 'Here you go:\n[{"db":"pubmed","query":"\\"RNA, Circular\\"[Mesh] AND stability[tiab]","why":"Checks stability claims"},{"db":"Google Scholar","query":"circRNA half-life exonuclease","why":"Recent measurements"},{"db":"biorxiv","query":"circRNA decay","why":"Preprints"},{"db":"wikipedia","query":"x","why":"dropped"}]';
   if (sys.includes('# NOW')) return 'Interpretation: Thistle Plot reports a one-way ANOVA. DrugA differs from Vehicle; see the post-hoc table. [1]';
-  if (/anova/i.test(last)) return 'I will run a one-way ANOVA in Thistle Plot.\n\n```thistle-plot\n' + JSON.stringify({ title: 'Weight by treatment', test: 'anova', dataset: 'mice.csv', layout: 'long', group: 'Treatment', value: 'Weight_g', control: 'Vehicle', options: { 'Post-hoc correction': 'Tukey', 'Bogus option': 'x' }, why: '3 independent groups' }) + '\n```\n';
+  if (/anova/i.test(last)) return 'I will run a one-way ANOVA in Thistle Plot.\n\n```thistle-plot\n' + JSON.stringify({ title: 'Weight by treatment', test: 'anova', dataset: 'mice.csv', layout: 'long', group: 'Treatment', value: 'Weight_g', control: 'Vehicle', options: { 'Post-hoc correction': 'Tukey' }, why: '3 independent groups' }) + '\n```\n';
   if (/comparison table/i.test(last)) return '## Comparison table\n\n| Citation | Research question | Design | Sample size | Key methods | Main findings | Limitations (authors) | Limitations (observed) |\n|---|---|---|---|---|---|---|---|\n| Ma et al., 2025 [1] | Roles of circRNA peptides | Review | N/A | **Synthesis** | Peptides exist [1, 2] | Detection limited | No primary data |\n| Sanger 1976 [3] | Viroid structure | EM, µ-scale | 12 | Electron microscopy | Circular RNA, ±5% | Old methods | Small n |\n\n## Patterns\n\n- Stability recurs [1].';
   if (/Mark THIS submission/.test(last)) return '**Suggested overall mark: 62 / 100**\n\n| criterion | mark |\n|---|---|\n| Understanding | 18/30 [1] |\n\nStrengths: clear [2].';
   return '## Summary\nThe paper reports DrugA increases weight [1, 2]. The rubric has bands [3]. Invalid cite [999].';
@@ -177,7 +177,7 @@ function chatReply(body) {
   ok(await page.$('.tp-card .table-tools') === null, 'Thistle Plot result tables get no Markdown table buttons');
   ok(/ANOVA/i.test(card.result || ''), 'TP ANOVA result shown in card');
   ok(card.img, 'TP auto-plot captured');
-  ok((card.warn || '').includes('Bogus option'), 'unknown option reported');
+  ok(!card.warn, 'no warning box: every option was applied (an unknown option now stops the run; tests/review.e2e.cjs)');
   const resMsg = await page.evaluate(() => window.thistleNotebook.messages.find(m => m.role === 'results')?.content || '');
   ok(/Post-hoc|Tukey/i.test(resMsg) && /F|p/.test(resMsg), 'results text sent back to the model');
   const G = await page.evaluate(() => window.thistleNotebook.messages.find(m => m.meta?.tp)?.meta.tp[0].G);

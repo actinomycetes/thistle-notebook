@@ -150,6 +150,7 @@ function typed(v) {
   if (typeof v === 'number') return v;
   const s = String(v).trim();
   if (s === '' || /^(na|n\/a|nan|null|none|-)$/i.test(s)) return null;
+  if (/^[-+]?0\d+$/.test(s)) return s; // identifiers such as 001 keep their text (v0.6.0: 001 and 1 became one subject)
   const n = Number(s.replace(/,(?=\d{3}\b)/g, ''));
   return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
 }
