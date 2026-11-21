@@ -33,6 +33,16 @@ export async function putMany(store, objs) {
   objs.forEach(o => os.put(o));
   return new Promise((res, rej) => { t.oncomplete = res; t.onerror = () => rej(t.error); });
 }
+// Replace a source record and all its search passages in one transaction: if any write fails, nothing changes
+// (v0.6.2: a re-read deleted the old passages before the new file was read)
+export async function replaceSource(src, chunks) {
+  const t = (await db()).transaction(['chunks', 'sources'], 'readwrite'), cs = t.objectStore('chunks');
+  const done = new Promise((res, rej) => { t.oncomplete = res; t.onabort = () => rej(t.error || new Error('Saving the source was cancelled.')); t.onerror = e => e.preventDefault(); });
+  const keys = await wrap(cs.index('src').getAllKeys(src.id));
+  try { keys.forEach(k => cs.delete(k)); chunks.forEach(c => cs.put(c)); t.objectStore('sources').put(src); }
+  catch (e) { t.abort(); await done.catch(() => {}); throw e; }
+  return done;
+}
 export async function delWhere(store, index, key) {
   const t = (await db()).transaction(store, 'readwrite'), idx = t.objectStore(store).index(index);
   const keys = await wrap(idx.getAllKeys(key));
@@ -79,7 +89,15 @@ export async function importNotebook(d) {
   await put('notebooks', nb);
   await putMany('sources', (d.sources || []).map(s => ({ ...s, id: re(s.id), nb: newNb })));
   await putMany('chunks', (d.chunks || []).map(c => ({ ...c, id: uid(), src: re(c.src), nb: newNb, emb: c.emb ? b64ToF32(c.emb) : null })));
-  await putMany('messages', (d.messages || []).map(m => ({ ...m, id: uid(), nb: newNb })));
-  await putMany('notes', (d.notes || []).map(n => ({ ...n, id: uid(), nb: newNb })));
+  // citations and answer metadata point at sources by id: give them the new ids too (v0.6.2)
+  const remapMeta = meta => {
+    if (!meta) return meta;
+    const out = { ...meta };
+    if (meta.cites) out.cites = Object.fromEntries(Object.entries(meta.cites).map(([n, c]) => [n, c?.srcId != null && map.has(c.srcId) ? { ...c, srcId: map.get(c.srcId) } : c]));
+    if (Array.isArray(meta.sourceIds)) out.sourceIds = meta.sourceIds.map(id => map.get(id) || id);
+    return out;
+  };
+  await putMany('messages', (d.messages || []).map(m => ({ ...m, id: uid(), nb: newNb, meta: remapMeta(m.meta) })));
+  await putMany('notes', (d.notes || []).map(n => ({ ...n, id: uid(), nb: newNb, meta: remapMeta(n.meta) })));
   return nb;
 }

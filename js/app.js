@@ -276,7 +276,7 @@ async function addFiles(files) {
     }
   }
 }
-async function finishSource(s, r) {
+async function finishSource(s, r, { replace = false } = {}) {
   s.kind = r.kind; s.role = r.role || guessRole(s.name, r.kind); s.segments = r.segments; s.tables = r.tables || null;
   s.meta = { ...(r.meta || {}) }; s.chars = r.segments.reduce((n, x) => n + x.text.length, 0);
   const chunks = chunkSegments(r.segments).map((c, i) => ({ id: uid(), nb: s.nb, src: s.id, idx: i, loc: c.loc, text: c.text, emb: null, embModel: null }));
@@ -288,8 +288,10 @@ async function finishSource(s, r) {
       chunks.forEach((c, i) => { c.emb = new Float32Array(vecs[i]); c.embModel = em; }); s.meta.embModel = em;
     } catch (e) { s.meta.embError = e.message; }
   }
-  await db.putMany('chunks', chunks); S.chunkCache.set(s.id, chunks);
-  s.status = 'ready'; delete s.progress; await db.put('sources', s); await db.touch(S.nb); renderSources();
+  s.status = 'ready'; delete s.progress;
+  if (replace) await db.replaceSource(s, chunks); // all or nothing
+  else { await db.putMany('chunks', chunks); await db.put('sources', s); }
+  S.chunkCache.set(s.id, chunks); await db.touch(S.nb); renderSources();
 }
 const fileInfo = f => ({ name: f.name, size: f.size, lastModified: f.lastModified, path: f.webkitRelativePath || '' });
 // Content fingerprint, so a moved or copied file (new date, same bytes) is not mistaken for an edited one
@@ -360,13 +362,18 @@ async function linkFile(s, file) {
   renderSources();
 }
 const parseCtx = s => ({ elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(), log: m => { s.progress = m; renderSources(); } });
+// Re-read: parse and index the new file first, then replace the source and its passages in one transaction. If reading
+// or saving fails, the previous version (record, passages, tables) stays as it was (v0.6.2).
 async function rereadSource(s) {
   const file = S.files.get(s.id); if (!file) return toast('Link the original file first (📂 Find files)', true);
-  const keep = { role: s.role };
-  await db.delWhere('chunks', 'src', s.id); S.chunkCache.delete(s.id); S.tableCache.delete(s.id);
-  s.status = 'busy'; renderSources();
-  try { const r = await parseFile(file, parseCtx(s)); s.file = { ...fileInfo(file), sha256: await fileHash(file) }; delete s.error; await finishSource(s, { ...r, role: keep.role }); toast(`Re-read “${s.name}”`); }
-  catch (e) { s.status = 'error'; s.error = e.message; renderSources(); }
+  const before = s.status; s.status = 'busy'; renderSources();
+  try {
+    const r = await parseFile(file, parseCtx(s));
+    const ns = { ...s, file: { ...fileInfo(file), sha256: await fileHash(file) } }; delete ns.error;
+    await finishSource(ns, { ...r, role: s.role }, { replace: true });
+    for (const k of Object.keys(s)) if (!(k in ns)) delete s[k];
+    Object.assign(s, ns); S.tableCache.delete(s.id); renderSources(); toast(`Re-read “${s.name}”`);
+  } catch (e) { s.status = before; delete s.progress; renderSources(); toast(`Could not re-read “${s.name}”: ${e.message}. The previous version is kept.`, true, 6000); }
 }
 function openOriginal(s) {
   const f = S.files.get(s.id); if (!f) return;
@@ -549,10 +556,15 @@ function usedSourcesDialog(m) {
     } }, '📁 Use the same tabs now'))));
 }
 const firstLine = t => (String(t).replace(/[#*`>]/g, '').split('\n').find(l => l.trim()) || 'Note').trim().slice(0, 70);
+// The cited source: by id; by file name only when exactly one source has that name (v0.6.2: a same-named earlier source won)
+function citeSource(c, list = S.sources) {
+  const byId = list.find(x => x.id === c.srcId); if (byId) return byId;
+  const byName = list.filter(x => x.name === c.source); return byName.length === 1 ? byName[0] : null;
+}
 function showCite(c, e) {
   const p = $('#popover');
   p.innerHTML = ''; p.append(h('div', {}, h('b', {}, c.source), ` — ${c.loc}`), h('div', { class: 'ex' }, c.text),
-    h('button', { class: 'btn small', onclick: () => { p.hidden = true; const s = S.sources.find(x => x.id === c.srcId || x.name === c.source); if (s) viewSource(s, c); else toast('That source is no longer in this notebook', true); } }, 'Open in source'));
+    h('button', { class: 'btn small', onclick: () => { p.hidden = true; const s = citeSource(c); if (s) viewSource(s, c); else toast('That source is no longer in this notebook (or two sources share its name)', true); } }, 'Open in source'));
   p.hidden = false;
   const r = e.target.getBoundingClientRect();
   p.style.left = Math.min(r.left, innerWidth - p.offsetWidth - 10) + 'px';
@@ -715,17 +727,23 @@ function tpCard(m, k) {
     res ? h('span', { class: 'status ' + (res.status === 'ok' ? 'ok' : 'err') }, res.status === 'ok' ? 'run in Thistle Plot' : 'failed') : h('span', { class: 'status' }, 'proposed')),
   h('div', { class: 'tp-meta' }, `${testName} · ${spec._dataset || spec.dataset || '?'}${spec.sheet ? ' [' + spec.sheet + ']' : ''} · ${describeSpec(spec)}`),
   spec.why ? h('div', {}, '💡 ', spec.why) : null);
-  if (buildErr) card.append(h('div', { class: 'err-box' }, buildErr));
+  // A successful run keeps the table it used (res.G): its .tplot and 👁 show that table with that result, even if the source
+  // was edited or removed since (v0.6.2: the download paired an old result with a freshly rebuilt table)
+  const ranG = res?.status === 'ok' && res.G ? res.G : null;
+  if (buildErr && !ranG) card.append(h('div', { class: 'err-box' }, buildErr));
+  if (buildErr && ranG) card.append(h('div', { class: 'hint' }, `The data for this analysis is not available now (${buildErr}). ⤓ .tplot and 👁 still give the table and result of the run below.`));
+  if (ranG && built && JSON.stringify(ranG) !== JSON.stringify(built.G)) card.append(h('div', { class: 'warn-box' }, 'The source data changed since this run. ⤓ .tplot and 👁 give the table the result below came from; ↻ Run again to use the current data.'));
   if (built) {
     const G = built.G;
     card.append(h('div', { class: 'preview hint' }, `Table for Thistle Plot: ${G.groups.length} column group(s) × ${G.nRows} row(s)${G.nReps > 1 ? ` × ${G.nReps} replicates` : ''} — `,
       G.groups.map(g => `${g.name} (n=${g.data.flat().filter(v => v !== '' && v != null).length})`).join(', '), built.notes.length ? ' · ' + built.notes.join(' ') : ''));
   }
   const btns = h('div', { class: 'tp-btns' });
-  if (built) {
-    btns.append(h('button', { class: 'btn small primary', onclick: async e => { e.target.disabled = true; await runSpec(m, k); } }, res ? '↻ Run again' : '▶ Run in Thistle Plot'),
-      h('button', { class: 'btn small', title: 'Thistle Plot project with this table (and the result, if run)', onclick: () => saveText(tplotFile(built.G, res?.status === 'ok' ? res : null, res?.plot, res?.appVersion), `${safeName(spec.title || spec.test)}.tplot`, 'application/json') }, '⤓ .tplot'),
-      h('button', { class: 'btn small', title: 'Show Thistle Plot with this table loaded', onclick: async () => { try { const w = await S.tp.ready(); w.applyG(built.G); openDrawer('tp'); } catch (e) { toast(e.message, true); } } }, '👁 Open in Thistle Plot'));
+  const tableG = ranG || built?.G, withResult = res?.status === 'ok' && (ranG || built) ? res : null;
+  if (built) btns.append(h('button', { class: 'btn small primary', onclick: async e => { e.target.disabled = true; await runSpec(m, k); } }, res ? '↻ Run again' : '▶ Run in Thistle Plot'));
+  if (tableG) {
+    btns.append(h('button', { class: 'btn small', title: ranG ? 'Thistle Plot project with the table and result of this run' : 'Thistle Plot project with this table (not run yet)', onclick: () => saveText(tplotFile(tableG, withResult, withResult?.plot, withResult?.appVersion), `${safeName(spec.title || spec.test)}.tplot`, 'application/json') }, '⤓ .tplot'),
+      h('button', { class: 'btn small', title: 'Show Thistle Plot with this table loaded', onclick: async () => { try { await S.tp.show(tableG); openDrawer('tp'); } catch (e) { toast(e.message, true); } } }, '👁 Open in Thistle Plot'));
     if (res?.status === 'ok' && !m.meta.interpreted) btns.append(h('button', { class: 'btn small', onclick: () => sendResults(m, 0, true) }, '💬 Interpret results'));
   }
   card.append(btns);
@@ -759,7 +777,7 @@ async function runSpec(m, k) {
     const r = await S.tp.run(sp, built.G);
     m.meta.tp[k] = { status: 'ok', ...r, notes: built.notes, G: built.G };
   } catch (e) { console.error(e); m.meta.tp[k] = { status: 'err', error: e.message }; }
-  await db.put('messages', m);
+  await db.put('messages', m); if (S.nb) await db.touch(S.nb); // a new result is an unsaved change (v0.6.2)
   const old = $(`.msg[data-id="${m.id}"]`); if (old) old.replaceWith(messageEl(m));
   return m.meta.tp[k];
 }
@@ -962,7 +980,7 @@ async function importFromTF() {
 }
 async function importFromTP() {
   try {
-    const w = await S.tp.ready(), G = w.eval('G');
+    const G = await S.tp.exclusive(async () => JSON.parse(JSON.stringify((await S.tp.ready()).eval('G')))); // not mid-run
     const cols = ['row'], rows = [];
     G.groups.forEach(g => g.reps.forEach(r => cols.push(G.groups.length > 1 || g.reps.length > 1 ? `${g.name} | ${r}` : g.name)));
     for (let i = 0; i < G.nRows; i++) rows.push([G.rowNames?.[i] ?? `Row ${i + 1}`, ...G.groups.flatMap(g => g.reps.map((_, k) => { const v = g.data?.[i]?.[k]; return v === '' || v == null ? null : isFinite(+v) ? +v : v; }))]);
@@ -1098,8 +1116,8 @@ Marking with AI help: follow your School's assessment policy; the marker remains
 
 // ---------------- save / open ----------------
 async function saveTnote() {
-  S.nb.savedAt = Date.now(); await db.put('notebooks', S.nb); // put, not touch: saving is not a change
-  const json = await db.exportNotebook(S.nb.id);
+  const t = Date.now(), json = await db.exportNotebook(S.nb.id); // marked saved only once the file content exists (v0.6.2)
+  S.nb.savedAt = t; await db.put('notebooks', S.nb); // put, not touch: saving is not a change
   saveText(json, `${safeName(S.nb.name)}.${FILE_EXT}`, 'application/json');
 }
 async function openTnote(file) {
@@ -1174,3 +1192,4 @@ async function init() {
 
 init().catch(e => { console.error(e); document.body.prepend(h('div', { class: 'err-box' }, 'Thistle Notebook failed to start: ' + e.message)); });
 window.thistleNotebook = S; // handy for debugging, like window.thistleFlow
+S._t = { tpCard, runSpec, rereadSource, citeSource }; // for tests/robust.e2e.cjs

@@ -1,13 +1,13 @@
 {
   "name": "thistle-notebook",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "private": true,
   "description": "Source-grounded research notebook for the Thistle suite, using the University of Edinburgh ELM API from the browser",
   "author": "Takanobu Tagawa (The University of Edinburgh)",
   "license": "MIT",
   "scripts": {
     "start": "cd .. && python3 -m http.server 8765",
-    "test": "node tests/syntax.cjs && node tests/app.e2e.cjs && node tests/workspace.e2e.cjs && node tests/layouts.e2e.cjs && node tests/review.e2e.cjs"
+    "test": "node tests/syntax.cjs && node tests/app.e2e.cjs && node tests/workspace.e2e.cjs && node tests/layouts.e2e.cjs && node tests/review.e2e.cjs && node tests/robust.e2e.cjs"
   },
   "devDependencies": {
     "playwright": "^1.48.0"

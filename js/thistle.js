@@ -242,7 +242,12 @@ export function defaultSuiteUrl(app) { // app = 'thistle-plot' | 'thistle-flow'
 }
 
 export class ThistleApp {
-  constructor(name, url, host) { this.name = name; this.url = url; this.host = host; this.frame = null; this.alerts = []; }
+  constructor(name, url, host) { this.name = name; this.url = url; this.host = host; this.frame = null; this.alerts = []; this._q = Promise.resolve(); }
+
+  // One user of the shared app frame at a time: a run (apply table → options → collect result and image) or a drawer action
+  // that changes the table waits for the previous one, even if that one failed (v0.6.2: two overlapping cards both got the
+  // second card's result).
+  exclusive(fn) { const p = this._q.then(() => fn()); this._q = p.catch(() => {}); return p; }
 
   get sameOrigin() { try { return new URL(this.url, location.href).origin === location.origin; } catch { return false; } }
 
@@ -282,7 +287,10 @@ export class ThistlePlot extends ThistleApp {
     return out;
   }
 
-  async run(spec, G) {
+  run(spec, G) { return this.exclusive(() => this._run(spec, G)); }
+  // Load a table into the frame for the user to look at (👁), in turn with runs
+  show(G) { return this.exclusive(async () => { const w = await this.ready(); w.applyG(G); return w; }); }
+  async _run(spec, G) {
     const w = await this.ready(), doc = w.document;
     this.alerts = [];
     w.applyG(G);

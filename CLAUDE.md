@@ -91,6 +91,13 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   spellings to the model (unique counts, levels, CSV; numeric summaries stay typed); the .xlsx writer keeps leading-zero
   and >15-significant-digit numbers as text (`asNumber`).
 
+- v0.6.2 (wider review, `tests/robust.e2e.cjs`): `ThistleApp.exclusive` serialises the shared frame (`run`, `show`,
+  `importFromTP`); analysis cards export/preview the run's own `res.G` (warn when the source changed; still available
+  after the source is removed); `rereadSource` parses first and commits with `db.replaceSource` (one transaction over
+  chunks + sources); `runSpec` touches the notebook; `saveTnote` sets `savedAt` after the export exists;
+  `importNotebook` remaps `meta.cites[].srcId` and `meta.sourceIds`; `citeSource` resolves by id, then a unique name.
+  `S._t` exposes `tpCard`, `runSpec`, `rereadSource`, `citeSource` to tests.
+
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README
    ("current vX.Y.Z", "Known limitations of vX.Y.Z").
