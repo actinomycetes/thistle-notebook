@@ -16,6 +16,16 @@ export function parseSpecs(text) {
 }
 
 const norm = s => String(s ?? '').trim().toLowerCase();
+// Index of `want` in `names`: the exact (trimmed, case-sensitive) name first; otherwise a case-insensitive match only when
+// it is the only one ("ctrl" never picks "Ctrl" while a "ctrl" also exists). -1 = none; throws when two names differ
+// only in case and neither is exact (v0.6.1, independent review).
+function pickName(names, want, what) {
+  const w = String(want ?? '').trim(), exact = names.findIndex(n => String(n ?? '').trim() === w);
+  if (exact >= 0) return exact;
+  const loose = names.map((n, i) => norm(n) === norm(w) ? i : -1).filter(i => i >= 0);
+  if (loose.length > 1) throw new Error(`${what} "${want}" could mean ${loose.map(i => `"${names[i]}"`).join(' or ')}; write it exactly as in the file.`);
+  return loose.length ? loose[0] : -1;
+}
 const PAIRED_TESTS = ['ttest_rel', 'wilcoxon'];
 
 // The dataset a spec names: a name with an extension must match exactly ("actual.xlsx" never runs on "actual.csv",
@@ -50,7 +60,7 @@ export function buildG(spec, table) {
   const cols = table.columns;
   const ci = name => {
     if (name == null) return -1;
-    const i = cols.findIndex(c => norm(c) === norm(name));
+    const i = pickName(cols, name, 'Column');
     if (i < 0) throw new Error(`Column "${name}" not found. Columns: ${cols.join(', ')}.`);
     return i;
   };
@@ -64,23 +74,26 @@ export function buildG(spec, table) {
       rows[r][c] = value;
     }
   }
-  // Filter values (v0.6.1, independent review): a value selects the cells with exactly its text. Only when no cell has
-  // that text may it match by number ("2.0" → the stored 2), and only if that number is written one way in the column;
-  // "1.10" never pulls in "1.1" as well. A value that matches nothing, or matches two spellings only by number, stops the
-  // run and names it.
+  // Filter values (v0.6.1, independent review): a value selects the cells with exactly its text (trimmed, case-sensitive,
+  // because S1 and s1 are different subjects). Only when no cell has that text may it match ignoring case ("female" →
+  // "Female"), and then by number ("2.0" → the stored 2), each only if it finds a single spelling in the column; "1.10"
+  // never pulls in "1.1", and "S1" never pulls in "s1". A value that matches nothing, or two spellings, stops the run.
   for (const [k, v] of Object.entries(spec.filter || {})) {
     const i = ci(k), wanted = [].concat(v).map(w => String(w).trim());
     const text = c => c == null ? null : String(c).trim();
     const picks = new Set(), problems = [];
     for (const w of wanted) {
-      const exact = rows.filter(r => text(r[i]) != null && norm(r[i]) === norm(w));
+      const exact = rows.filter(r => text(r[i]) === w);
       if (exact.length) { exact.forEach(r => picks.add(r)); continue; }
       const n = w === '' ? NaN : Number(w);
-      const byNum = Number.isFinite(n) ? rows.filter(r => r[i] != null && String(r[i]).trim() !== '' && Number(r[i]) === n) : [];
-      const spellings = [...new Set(byNum.map(r => text(r[i])))];
-      if (spellings.length === 1) byNum.forEach(r => picks.add(r));
-      else if (spellings.length > 1) problems.push(`"${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`);
-      else problems.push(`no rows with "${w}"`);
+      let found = false;
+      for (const same of [c => text(c) != null && norm(c) === norm(w),                                   // ignoring case
+        c => Number.isFinite(n) && c != null && String(c).trim() !== '' && Number(c) === n]) {             // by number
+        const hits = rows.filter(r => same(r[i])), spellings = [...new Set(hits.map(r => text(r[i])))];
+        if (spellings.length === 1) { hits.forEach(r => picks.add(r)); found = true; break; }
+        if (spellings.length > 1) { problems.push(`"${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`); found = true; break; }
+      }
+      if (!found) problems.push(`no rows with "${w}"`);
     }
     if (problems.length) throw new Error(`Filter on "${cols[i]}": ${problems.join('; ')}. Use the values exactly as written in the file. Values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')}.`);
     rows = rows.filter(r => picks.has(r));
@@ -93,7 +106,7 @@ export function buildG(spec, table) {
     if (order) { const o = order.map(String); return [...o.filter(x => seen.includes(x)), ...seen.filter(x => !o.includes(x))]; }
     return seen;
   };
-  const putFirst = (names, ctrl) => { if (ctrl == null) return names; const i = names.findIndex(n => norm(n) === norm(ctrl)); if (i < 0) throw new Error(`Control group "${ctrl}" not found. Groups: ${names.join(', ')}.`); return [names[i], ...names.filter((_, k) => k !== i)]; };
+  const putFirst = (names, ctrl) => { if (ctrl == null) return names; const i = pickName(names, ctrl, 'Control group'); if (i < 0) throw new Error(`Control group "${ctrl}" not found. Groups: ${names.join(', ')}.`); return [names[i], ...names.filter((_, k) => k !== i)]; };
   const layout = spec.layout || (spec.columns ? 'wide' : spec.x ? 'xy' : spec.time ? 'survival' : spec.groups ? 'matrix' : spec.rows ? 'counts' : 'long');
   const G = { nReps: 1, nRows: 0, rowNames: [], groups: [] };
   const notes = spec._datasetNote ? [spec._datasetNote] : [];
@@ -136,7 +149,7 @@ export function buildG(spec, table) {
   } else if (layout === 'wide' || layout === 'single') {
     let cs = [].concat(spec.columns || []).map(ci);
     if (!cs.length) throw new Error('"columns" is required for the wide layout.');
-    if (spec.control != null) { const k = cs.findIndex(i => norm(cols[i]) === norm(spec.control));
+    if (spec.control != null) { const k = pickName(cs.map(i => cols[i]), spec.control, 'Control');
       if (k < 0) throw new Error(`Control "${spec.control}" is not one of the columns: ${cs.map(i => cols[i]).join(', ')}.`); // v0.6.0: was ignored
       if (k > 0) cs = [cs[k], ...cs.filter((_, j) => j !== k)]; }
     const li = spec.label ? ci(spec.label) : -1;

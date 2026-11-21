@@ -184,6 +184,25 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(JSON.stringify(dec.only110) === '["1.10"]', 'filter 1.10 alone selects exactly subject 1.10 (not 1.1 as well) ' + JSON.stringify(dec.only110));
   ok(JSON.stringify(dec.only20) === '["2"]', 'filter 2.0 still finds the stored 2 ' + JSON.stringify(dec.only20));
   ok(/1\.100/.test(dec.ambiguous || '') && /1\.1\b/.test(dec.ambiguous || '') && /1\.10/.test(dec.ambiguous || ''), 'a value that matches two spellings only by number (1.100) is refused and names both: ' + dec.ambiguous);
+  // independent review: case matters for IDs; S1 and s1 are two subjects, so a filter must not join them
+  const cs = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const parsed = await parseFile(new File(['ID,Cond,Y\nS1,A,1\ns1,A,2\nS2,A,3\nS1,B,4\ns1,B,6\nS2,B,8\n'], 'case.csv'), {});
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const one = id => { try { return buildG({ ...spec, filter: { ID: [id] } }, parsed.tables.case).G.rowNames; } catch (e) { return 'ERR ' + e.message; } };
+    return { all: buildG(spec, parsed.tables.case).G.rowNames, S1: one('S1'), s1: one('s1'), s2: one('s2') };
+  });
+  ok(cs.all.length === 3, 'S1, s1 and S2 are three subjects ' + JSON.stringify(cs.all));
+  ok(JSON.stringify(cs.S1) === '["S1"]', 'filter S1 selects only S1 ' + JSON.stringify(cs.S1));
+  ok(JSON.stringify(cs.s1) === '["s1"]', 'filter s1 selects only s1 ' + JSON.stringify(cs.s1));
+  ok(JSON.stringify(cs.s2) === '["S2"]', 'a different case still matches when only one spelling exists (s2 → S2) ' + JSON.stringify(cs.s2));
+  // the same rule for column names and control groups
+  r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
+    [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
+  ok(!r.error && r.G.groups[0].name === 'ctrl' && r.G.groups[0].data.map(x => x[0]).join() === '20,21,22', 'control "ctrl" and column "y" are taken exactly, not "Ctrl" / "Y" ' + (r.error || JSON.stringify(r.G?.groups?.map(g => g.name))));
+  r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'CTRL', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'], [['Ctrl', 1, 10], ['ctrl', 5, 20]])]);
+  ok(r.error && /Ctrl/.test(r.error) && /ctrl/.test(r.error), 'a control that matches two groups only by case is refused ' + (r.error || ''));
 
   const six = ['A1','A2','A3','B1','B2','B3'];
   const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));
