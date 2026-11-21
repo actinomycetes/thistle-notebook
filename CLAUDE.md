@@ -77,8 +77,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   (checked against the data only for the long layout); `importTable` stores `originalText` [row, col, text] for cells
   whose typed value changes their spelling, except missing markers; in measurement-like (mostly decimal) columns only
   spellings that collide (1.1 and 1.10 read as the same number) are kept, so subjects never merge, and
-  `buildG` uses it for category columns (subject, group, rows, cols, label, filter). Filter values match by text, or by number
-  against a cell stored as a number ("2.0" matches 2); a filter value with no matching row throws.
+  `buildG` uses it for category columns (subject, group, rows, cols, label, filter). Filter values match by exact text first; only
+  without an exact match may they match by number, and only one spelling ("2.0" → 2); no match or two spellings → throw.
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

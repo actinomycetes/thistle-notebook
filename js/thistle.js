@@ -64,15 +64,26 @@ export function buildG(spec, table) {
       rows[r][c] = value;
     }
   }
-  // A filter value matches a cell with the same text, or a cell stored as a plain number with the same value ("2.0" → 2).
-  // Spellings that collide in a column (1.1 and 1.10) are kept as text, so the number match never joins them. A value
-  // that matches no row stops the run (v0.6.1: a filter for "2.0" silently dropped subject 2).
+  // Filter values (v0.6.1, independent review): a value selects the cells with exactly its text. Only when no cell has
+  // that text may it match by number ("2.0" → the stored 2), and only if that number is written one way in the column;
+  // "1.10" never pulls in "1.1" as well. A value that matches nothing, or matches two spellings only by number, stops the
+  // run and names it.
   for (const [k, v] of Object.entries(spec.filter || {})) {
-    const i = ci(k), wanted = [].concat(v);
-    const hit = (cell, w) => norm(cell) === norm(w) || (typeof cell === 'number' && String(w).trim() !== '' && Number(String(w).trim()) === cell);
-    const unmatched = wanted.filter(w => !rows.some(r => hit(r[i], w)));
-    if (unmatched.length) throw new Error(`Filter on "${cols[i]}": no rows with ${unmatched.map(w => JSON.stringify(String(w))).join(', ')}. Values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')}.`);
-    rows = rows.filter(r => wanted.some(w => hit(r[i], w)));
+    const i = ci(k), wanted = [].concat(v).map(w => String(w).trim());
+    const text = c => c == null ? null : String(c).trim();
+    const picks = new Set(), problems = [];
+    for (const w of wanted) {
+      const exact = rows.filter(r => text(r[i]) != null && norm(r[i]) === norm(w));
+      if (exact.length) { exact.forEach(r => picks.add(r)); continue; }
+      const n = w === '' ? NaN : Number(w);
+      const byNum = Number.isFinite(n) ? rows.filter(r => r[i] != null && String(r[i]).trim() !== '' && Number(r[i]) === n) : [];
+      const spellings = [...new Set(byNum.map(r => text(r[i])))];
+      if (spellings.length === 1) byNum.forEach(r => picks.add(r));
+      else if (spellings.length > 1) problems.push(`"${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`);
+      else problems.push(`no rows with "${w}"`);
+    }
+    if (problems.length) throw new Error(`Filter on "${cols[i]}": ${problems.join('; ')}. Use the values exactly as written in the file. Values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')}.`);
+    rows = rows.filter(r => picks.has(r));
   }
   if (!rows.length) throw new Error('No rows left after the filter.');
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);

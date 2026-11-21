@@ -172,12 +172,18 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const all = buildG(spec, parsed.tables.dec);
     const filtered = buildG({ ...spec, filter: { ID: ['1.1', '1.10', '2.0'] } }, parsed.tables.dec);
     let unmatched; try { buildG({ ...spec, filter: { ID: ['1.1', '3.0'] } }, parsed.tables.dec); } catch (e) { unmatched = e.message; }
-    return { ...all, filtered: filtered.G.rowNames, unmatched };
+    const one = id => buildG({ ...spec, filter: { ID: [id] } }, parsed.tables.dec).G.rowNames;
+    let ambiguous; try { one('1.100'); } catch (e) { ambiguous = e.message; }
+    return { ...all, filtered: filtered.G.rowNames, unmatched, only11: one('1.1'), only110: one('1.10'), only20: one('2.0'), ambiguous };
   });
   ok(dec.G.rowNames.length === 3 && dec.G.rowNames.includes('1.1') && dec.G.rowNames.includes('1.10'), 'decimal-looking subject IDs 1.1 and 1.10 stay separate: 3 pairs ' + JSON.stringify(dec.G.rowNames));
   ok(!dec.notes.some(n => /averag/i.test(n)), 'no subjects merged and averaged as technical repeats');
   ok(JSON.stringify(dec.filtered) === JSON.stringify(dec.G.rowNames), 'a filter listing the three original IDs keeps the same three pairs ' + JSON.stringify(dec.filtered));
   ok(/3\.0/.test(dec.unmatched || ''), 'a filter value that matches no row stops the run and names it: ' + dec.unmatched);
+  ok(JSON.stringify(dec.only11) === '["1.1"]', 'filter 1.1 alone selects exactly subject 1.1 ' + JSON.stringify(dec.only11));
+  ok(JSON.stringify(dec.only110) === '["1.10"]', 'filter 1.10 alone selects exactly subject 1.10 (not 1.1 as well) ' + JSON.stringify(dec.only110));
+  ok(JSON.stringify(dec.only20) === '["2"]', 'filter 2.0 still finds the stored 2 ' + JSON.stringify(dec.only20));
+  ok(/1\.100/.test(dec.ambiguous || '') && /1\.1\b/.test(dec.ambiguous || '') && /1\.10/.test(dec.ambiguous || ''), 'a value that matches two spellings only by number (1.100) is refused and names both: ' + dec.ambiguous);
 
   const six = ['A1','A2','A3','B1','B2','B3'];
   const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));
