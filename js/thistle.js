@@ -77,26 +77,32 @@ export function buildG(spec, table) {
   // Filter values (v0.6.1, independent review): a value selects the cells with exactly its text (trimmed, case-sensitive,
   // because S1 and s1 are different subjects). Only when no cell has that text may it match ignoring case ("female" →
   // "Female"), and then by number ("2.0" → the stored 2), each only if it finds a single spelling in the column; "1.10"
-  // never pulls in "1.1", and "S1" never pulls in "s1". A value that matches nothing, or two spellings, stops the run.
-  for (const [k, v] of Object.entries(spec.filter || {})) {
-    const i = ci(k), wanted = [].concat(v).map(w => String(w).trim());
-    const text = c => c == null ? null : String(c).trim();
-    const picks = new Set(), problems = [];
-    for (const w of wanted) {
-      const exact = rows.filter(r => text(r[i]) === w);
-      if (exact.length) { exact.forEach(r => picks.add(r)); continue; }
-      const n = w === '' ? NaN : Number(w);
-      let found = false;
-      for (const same of [c => text(c) != null && norm(c) === norm(w),                                   // ignoring case
-        c => Number.isFinite(n) && c != null && String(c).trim() !== '' && Number(c) === n]) {             // by number
-        const hits = rows.filter(r => same(r[i])), spellings = [...new Set(hits.map(r => text(r[i])))];
-        if (spellings.length === 1) { hits.forEach(r => picks.add(r)); found = true; break; }
-        if (spellings.length > 1) { problems.push(`"${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`); found = true; break; }
+  // never pulls in "1.1", and "S1" never pulls in "s1". Every value is resolved against its WHOLE column (not the rows left
+  // by another filter, which let {Site: South, ID: S1} pick s1); matches are combined within a column and intersected
+  // across columns. A value that matches nothing or two spellings stops the run, and so does an empty intersection.
+  const filters = Object.entries(spec.filter || {});
+  if (filters.length) {
+    const text = c => c == null ? null : String(c).trim(), problems = [], keep = [];
+    for (const [k, v] of filters) {
+      const i = ci(k), picks = new Set();
+      for (const w of [].concat(v).map(x => String(x).trim())) {
+        const exact = rows.filter(r => text(r[i]) === w);
+        if (exact.length) { exact.forEach(r => picks.add(r)); continue; }
+        const n = w === '' ? NaN : Number(w);
+        let found = false;
+        for (const same of [c => text(c) != null && norm(c) === norm(w),                                 // ignoring case
+          c => Number.isFinite(n) && c != null && String(c).trim() !== '' && Number(c) === n]) {           // by number
+          const hits = rows.filter(r => same(r[i])), spellings = [...new Set(hits.map(r => text(r[i])))];
+          if (spellings.length === 1) { hits.forEach(r => picks.add(r)); found = true; break; }
+          if (spellings.length > 1) { problems.push(`"${cols[i]}": "${w}" could mean ${spellings.map(x => `"${x}"`).join(' or ')}`); found = true; break; }
+        }
+        if (!found) problems.push(`"${cols[i]}": no rows with "${w}" (values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')})`);
       }
-      if (!found) problems.push(`no rows with "${w}"`);
+      keep.push(picks);
     }
-    if (problems.length) throw new Error(`Filter on "${cols[i]}": ${problems.join('; ')}. Use the values exactly as written in the file. Values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')}.`);
-    rows = rows.filter(r => picks.has(r));
+    if (problems.length) throw new Error(`Filter: ${problems.join('; ')}. Use the values exactly as written in the file.`);
+    rows = rows.filter(r => keep.every(p => p.has(r)));
+    if (!rows.length) throw new Error(`Filter: no rows match all of ${filters.map(([k, v]) => `${k} = ${[].concat(v).join(' or ')}`).join(' and ')}.`);
   }
   if (!rows.length) throw new Error('No rows left after the filter.');
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);

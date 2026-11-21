@@ -197,6 +197,20 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(JSON.stringify(cs.S1) === '["S1"]', 'filter S1 selects only S1 ' + JSON.stringify(cs.S1));
   ok(JSON.stringify(cs.s1) === '["s1"]', 'filter s1 selects only s1 ' + JSON.stringify(cs.s1));
   ok(JSON.stringify(cs.s2) === '["S2"]', 'a different case still matches when only one spelling exists (s2 → S2) ' + JSON.stringify(cs.s2));
+  // independent review: filters resolve against the whole column, not the rows left by an earlier filter
+  const mf = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const t1 = (await parseFile(new File(['ID,Site,Cond,Y\nS1,North,A,1\nS1,North,B,2\ns1,South,A,3\ns1,South,B,5\n'], 'mf.csv'), {})).tables.mf;
+    const t2 = (await parseFile(new File(['ID,Site,Cond,Y\n1.1,North,A,1\n1.1,North,B,2\n1.10,South,A,3\n1.10,South,B,5\n'], 'mf2.csv'), {})).tables.mf2;
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const go = (t, filter) => { try { const b = buildG({ ...spec, filter }, t); return { names: b.G.rowNames, vals: b.G.groups.map(g => g.data.map(x => x[0])) }; } catch (e) { return { error: e.message }; } };
+    return { a: go(t1, { ID: 'S1', Site: 'South' }), b: go(t1, { Site: 'South', ID: 'S1' }),
+      c: go(t1, { ID: 's1', Site: 'South' }), d: go(t1, { Site: 'South', ID: 's1' }), e: go(t2, { Site: 'South', ID: '1.100' }) };
+  });
+  ok(mf.a.error && mf.b.error && /no rows/i.test(mf.a.error) && /no rows/i.test(mf.b.error), 'ID S1 + Site South selects nothing in either order (S1 was swapped for s1 when Site came first) ' + JSON.stringify([mf.a, mf.b]));
+  ok(!mf.c.error && JSON.stringify(mf.c) === JSON.stringify(mf.d) && JSON.stringify(mf.c.names) === '["s1"]' && JSON.stringify(mf.c.vals) === '[[3],[5]]', 'ID s1 + Site South gives the same subject and values in either order ' + JSON.stringify([mf.c, mf.d]));
+  ok(mf.e.error && /1\.100/.test(mf.e.error) && /could mean/.test(mf.e.error), 'a site filter cannot make an ambiguous 1.100 resolve to one subject ' + JSON.stringify(mf.e));
   // the same rule for column names and control groups
   r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
     [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
