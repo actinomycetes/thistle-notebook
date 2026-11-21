@@ -151,6 +151,16 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   r = await run({ ...example, options: { 'Post-hoc correction': 'Dunnett', 'Confidence band': '99%' } }, M);
   ok(r.error && /Confidence band/.test(r.error), 'options: an option Thistle Plot does not have is refused ' + (r.error || ''));
 
+  const identity = await page.evaluate(async () => {
+    const {parseFile} = await import('./js/ingest.js');
+    const {buildG} = await import('./js/thistle.js');
+    const file = new File(['ID,Group,Y\n1e3,A,1e3\n1000,A,2\nNA,A,3\n'], 'identity.csv');
+    const parsed = await parseFile(file, {});
+    return buildG({layout:'long',subject:'ID',group:'Group',value:'Y'},parsed.tables.identity).G;
+  });
+  ok(JSON.stringify(identity.rowNames) === '["1e3","1000","NA"]' && identity.groups[0].data[0][0] === 1000,
+    'categorical spellings survive while scientific-notation measurements stay numeric');
+
   const six = ['A1','A2','A3','B1','B2','B3'];
   const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));
   r = await run({ test:'anova2', layout:'wide', columns:six, options:{'opt-nA':2,'opt-nB':3} }, [groups]);
