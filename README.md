@@ -127,7 +127,7 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   offer for the design, or a TP error, fails the analysis instead of being shown as a result.
 - **More checks (v0.6.0, second statistical review):** a file named with its extension must match exactly, and a bare
   name only when one file matches; a control must be one of the chosen columns; pre-counted data must hold whole
-  numbers of 0 or more (a combination with no row counts as 0 and is named); a two-way ANOVA takes its design from two
+  numbers of 0 or more (omitted combinations require explicit counts or an agreed `omittedCounts: "zero"` sparse-table policy); a two-way ANOVA takes its design from two
   factor columns and refuses options that disagree; subject IDs such as 001 keep their text; an option TP does not have
   stops the analysis.
 - **Thistle Flow**: in 🔬 Thistle apps → Thistle Flow, load FCS files and gate as usual, then **⬇ Add TF statistics as
