@@ -106,6 +106,8 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   r = await run(cspec, cnt([['A', 'yes', 10], ['A', 'no', 0], ['B', 'yes', 0], ['B', 'no', 10]]));
   ok(!r.error && JSON.stringify(r.G.groups.map(g => g.data.map(x => x[0]))) === '[[10,0],[0,10]]', 'N1: a genuine 0 is kept ' + (r.error || ''));
   r = await run(cspec, cnt([['A', 'yes', 10], ['B', 'yes', 0], ['B', 'no', 10]]));
+  ok(/Missing pre-counted/.test(r.error || ''), 'missing combinations need an explicit policy');
+  r = await run({ ...cspec, omittedCounts: 'zero' }, cnt([['A', 'yes', 10], ['B', 'yes', 0], ['B', 'no', 10]]));
   ok(!r.error && (r.notes || []).some(n => /A × no/.test(n) && /counted as 0/.test(n)), 'N1: an absent combination counts as 0 and the notes say which ' + JSON.stringify(r.notes || r.error));
 
   // N2: an explicit file name must match exactly; a bare name only when it is unique
@@ -149,5 +151,11 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   r = await run({ ...example, options: { 'Post-hoc correction': 'Dunnett', 'Confidence band': '99%' } }, M);
   ok(r.error && /Confidence band/.test(r.error), 'options: an option Thistle Plot does not have is refused ' + (r.error || ''));
 
+  const six = ['A1','A2','A3','B1','B2','B3'];
+  const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));
+  r = await run({ test:'anova2', layout:'wide', columns:six, options:{'opt-nA':2,'opt-nB':3} }, [groups]);
+  ok(!r.error && /1200\.500/.test(r.text), 'wide two-way design preserves explicit 2 by 3 dimensions');
+  r = await run({ ...wspec, dataset: 'wide.csv' }, [groups, groups]);
+  ok(/Multiple loaded/.test(r.error || ''), 'duplicate filenames require unique selection');
   await b.close(); process.exit(fails ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
