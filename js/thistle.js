@@ -105,9 +105,15 @@ export function buildG(spec, table) {
   if (!rows.length) throw new Error('No rows left after the filter.');
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);
   const cell = v => (num(v) ?? '');
-  const levels = (i, order) => {
+  // Levels of a category column in file order; `order` (field = its spec name) puts the listed levels first. A level
+  // listed twice is refused (v0.6.1, independent review: it duplicated a group with the same observations).
+  const levels = (i, order, field = 'order') => {
     const seen = []; rows.forEach(r => { const v = cat(r, i), k = v == null ? null : String(v); if (k != null && !seen.includes(k)) seen.push(k); });
-    if (order) { const o = order.map(String); return [...o.filter(x => seen.includes(x)), ...seen.filter(x => !o.includes(x))]; }
+    if (order) {
+      const o = [].concat(order).map(String), dup = o.find((x, j) => o.indexOf(x) !== j);
+      if (dup !== undefined) throw new Error(`"${field}" lists "${dup}" more than once; give each level once.`);
+      return [...o.filter(x => seen.includes(x)), ...seen.filter(x => !o.includes(x))];
+    }
     return seen;
   };
   const putFirst = (names, ctrl) => { if (ctrl == null) return names; const i = pickName(names, ctrl, 'Control group'); if (i < 0) throw new Error(`Control group "${ctrl}" not found. Groups: ${names.join(', ')}.`); return [names[i], ...names.filter((_, k) => k !== i)]; };
@@ -121,30 +127,36 @@ export function buildG(spec, table) {
     if (spec.test === 'anova2' && gcols.length !== 2) throw new Error('A two-way ANOVA in the long layout needs two factor columns in "group" (for example ["Genotype", "Treatment"]), so that the design comes from the data.');
     if (PAIRED_TESTS.includes(spec.test) && si < 0) throw new Error('A paired test in the long layout needs a "subject" column that says which measurements belong to the same subject (animal, patient, experiment). Without it the rows would be paired by their order in the file.');
     const key = r => gcols.map(i => cat(r, i) == null ? null : String(cat(r, i)));
-    let names;
+    // Observations are assigned by the tuple of levels (a cell index), never by the display name: "a" + "b · c" and
+    // "a · b" + "c" both read "a · b · c" (v0.6.1, independent review: two cells received each other's values).
+    let tuples, names;
     if (gcols.length === 2) { // two-way: A-major order, as Thistle Plot's two-way ANOVA expects
-      const A = levels(gcols[0], spec.orderA), B = levels(gcols[1], spec.orderB);
-      names = A.flatMap(a => B.map(b => `${a} · ${b}`));
+      const A = levels(gcols[0], spec.orderA, 'orderA'), B = levels(gcols[1], spec.orderB, 'orderB');
+      tuples = A.flatMap(a => B.map(b => [a, b]));
+      names = tuples.map(([a, b]) => `${a} · ${b}`);
+      if (new Set(names).size < names.length) names = tuples.map(([a, b]) => `[${a}] · [${b}]`); // keep labels distinct
+      if (new Set(names).size < names.length) names = names.map((n, k) => `${n} (cell ${k + 1})`);
       notes.push(`Two-way layout: factor A = ${cols[gcols[0]]} (${A.length} levels), factor B = ${cols[gcols[1]]} (${B.length} levels).`);
       spec._nA = A.length; spec._nB = B.length;
-    } else names = putFirst(levels(gcols[0], spec.order), spec.control);
-    const gname = r => { const k = key(r); return k.some(x => x == null) ? null : k.join(' · '); };
-    const valid = rows.filter(r => gname(r) != null && num(r[vi]) != null);
+    } else { names = putFirst(levels(gcols[0], spec.order), spec.control); tuples = names.map(n => [n]); }
+    const cellOf = new Map(tuples.map((t, k) => [JSON.stringify(t), k]));
+    const gidx = r => { const k = key(r); return k.some(x => x == null) ? null : (cellOf.get(JSON.stringify(k)) ?? null); };
+    const valid = rows.filter(r => gidx(r) != null && num(r[vi]) != null);
     if (si >= 0) {
       const subjects = levels(si);
       const noId = valid.filter(r => cat(r, si) == null || String(cat(r, si)).trim() === '').length;
       if (noId) notes.push(`${noId} row(s) with no subject ID were left out.`);
       const cellVals = new Map();
-      valid.forEach(r => { const k = String(cat(r, si)) + '\u0000' + gname(r); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
+      valid.forEach(r => { const k = JSON.stringify([String(cat(r, si)), gidx(r)]); (cellVals.get(k) || cellVals.set(k, []).get(k)).push(num(r[vi])); });
       // One value per subject and group: repeated (technical) measurements are averaged, so the subject stays the unit
       // of analysis (v0.5.0: repeats became extra pairs and inflated n and the degrees of freedom).
       const repeated = [...cellVals.values()].filter(v => v.length > 1).length;
       if (repeated) notes.push(`${repeated} subject × group cell(s) had repeated measurements; they were averaged, so each subject counts once.`);
       G.nReps = 1; G.rowNames = subjects; G.nRows = subjects.length;
-      G.groups = names.map(n => ({ name: n, reps: ['Value'],
-        data: subjects.map(s => { const v = cellVals.get(String(s) + '\u0000' + n); return [v?.length ? v.reduce((a, x) => a + x, 0) / v.length : '']; }) }));
+      G.groups = names.map((n, g) => ({ name: n, reps: ['Value'],
+        data: subjects.map(s => { const v = cellVals.get(JSON.stringify([String(s), g])); return [v?.length ? v.reduce((a, x) => a + x, 0) / v.length : '']; }) }));
     } else {
-      const byG = names.map(n => valid.filter(r => gname(r) === n).map(r => num(r[vi])));
+      const byG = names.map((_, g) => valid.filter(r => gidx(r) === g).map(r => num(r[vi])));
       const n = Math.max(...byG.map(v => v.length));
       G.nRows = n; G.rowNames = Array.from({ length: n }, (_, i) => `Obs ${i + 1}`);
       G.groups = names.map((nm, k) => ({ name: nm, reps: ['Value'], data: Array.from({ length: n }, (_, i) => [byG[k][i] ?? '']) }));
@@ -168,7 +180,7 @@ export function buildG(spec, table) {
     G.groups = [xi, yi].map(i => ({ name: cols[i], reps: ['Value'], data: keep.map(r => [num(r[i])]) }));
   } else if (layout === 'counts') {
     const ri = ci(spec.rows), cj = ci(spec.cols), ni = spec.count ? ci(spec.count) : -1;
-    const R = levels(ri, spec.orderRows), C = putFirst(levels(cj, spec.order), spec.control);
+    const R = levels(ri, spec.orderRows, 'orderRows'), C = putFirst(levels(cj, spec.order), spec.control);
     const tab = R.map(() => C.map(() => 0)), seen = R.map(() => C.map(() => false)), bad = [];
     // Pre-counted data: each count must be a whole number >= 0 (v0.6.0: a blank became 0 and two 0.5 became 1 before
     // Thistle Plot could check the table). A combination with no row at all counts as 0, and the notes say which.

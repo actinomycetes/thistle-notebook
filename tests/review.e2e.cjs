@@ -227,6 +227,32 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(JSON.stringify(meas.filt.vals) === JSON.stringify(meas.plain.vals) && JSON.stringify(meas.filt.names) === JSON.stringify(meas.plain.names) && !meas.filt.notes.some(n => /left out/.test(n)),
     'filtering a measurement column by all its values gives the same table, two complete pairs, no dropped rows ' + JSON.stringify(meas.filt));
   ok(JSON.stringify(meas.cased.vals) === '[[1000,900],[1100,1001]]' && !meas.cased.notes.some(n => /left out/.test(n)), 'subject "id" and value "ID" keep the measurement typed ' + JSON.stringify(meas.cased));
+  // independent review: two-way cells are keyed by their levels, not by a joined display name
+  const cells = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const t = { columns: ['A', 'B', 'Y', 'S'], rows: [['a', 'b · c', 10, 'p1'], ['a', 'c', 20, 'p1'], ['a · b', 'b · c', 30, 'p1'], ['a · b', 'c', 40, 'p1']] };
+    const un = buildG({ test: 'anova2', layout: 'long', group: ['A', 'B'], value: 'Y' }, t);
+    const pr = buildG({ test: 'anova2', layout: 'long', group: ['A', 'B'], value: 'Y', subject: 'S' }, t);
+    const vals = b => b.G.groups.map(g => g.data.map(x => x[0]).filter(v => v !== ''));
+    return { un: vals(un), pr: vals(pr), names: un.G.groups.map(g => g.name) };
+  });
+  ok(JSON.stringify(cells.un) === '[[10],[20],[30],[40]]', 'unpaired: each two-way cell gets only its own value (cells 1 and 4 both got [10,40]) ' + JSON.stringify(cells.un));
+  ok(JSON.stringify(cells.pr) === '[[10],[20],[30],[40]]', 'subject-indexed: each two-way cell gets only its own value ' + JSON.stringify(cells.pr));
+  ok(new Set(cells.names).size === 4, 'the four cells have four different names ' + JSON.stringify(cells.names));
+  // independent review: a level repeated in an order list is refused instead of duplicating a group
+  const ord = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const t = { columns: ['Cond', 'Y'], rows: [['A', 1000], ['A', 900], ['B', 1100], ['B', 1001]] };
+    const t2 = { columns: ['F', 'G', 'Y'], rows: [['x', 'u', 1], ['x', 'v', 2], ['y', 'u', 3], ['y', 'v', 4]] };
+    const err = f => { try { f(); return null; } catch (e) { return e.message; } };
+    return {
+      one: err(() => buildG({ test: 'anova', layout: 'long', group: 'Cond', value: 'Y', order: ['A', 'A', 'B'] }, t)),
+      two: err(() => buildG({ test: 'anova2', layout: 'long', group: ['F', 'G'], value: 'Y', orderB: ['v', 'v'] }, t2)),
+      partial: buildG({ test: 'anova', layout: 'long', group: 'Cond', value: 'Y', order: ['B'] }, t).G.groups.map(g => g.name) };
+  });
+  ok(/"order"/.test(ord.one || '') && /"A"/.test(ord.one || ''), 'a repeated level in "order" is refused, naming the field and level: ' + ord.one);
+  ok(/"orderB"/.test(ord.two || '') && /"v"/.test(ord.two || ''), 'a repeated level in "orderB" is refused: ' + ord.two);
+  ok(JSON.stringify(ord.partial) === '["B","A"]', 'a valid partial order puts B first and adds A once ' + JSON.stringify(ord.partial));
   // the same rule for column names and control groups
   r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
     [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
