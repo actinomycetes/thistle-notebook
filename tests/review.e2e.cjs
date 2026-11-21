@@ -163,6 +163,15 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     'categorical spellings survive while scientific-notation measurements stay numeric ' + JSON.stringify(identity.G.rowNames));
   ok(identity.notes.some(n => /1 row.*no subject/i.test(n)), 'NA in a subject column stays missing (not a subject called "NA") and is reported');
   ok(identity.bigOrig === 0, 'a column of decimals stores no original text (saved notebooks do not grow): ' + identity.bigOrig);
+  // independent review of PR #1: decimal-looking subject IDs 1.1, 1.10 and 2.0 are three subjects, not two
+  const dec = await page.evaluate(async () => {
+    const { parseFile } = await import('./js/ingest.js');
+    const { buildG } = await import('./js/thistle.js');
+    const parsed = await parseFile(new File(['ID,Cond,Y\n1.1,A,1\n1.10,A,2\n2.0,A,3\n1.1,B,4\n1.10,B,6\n2.0,B,8\n'], 'dec.csv'), {});
+    return buildG({ test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' }, parsed.tables.dec);
+  });
+  ok(dec.G.rowNames.length === 3 && dec.G.rowNames.includes('1.1') && dec.G.rowNames.includes('1.10'), 'decimal-looking subject IDs 1.1 and 1.10 stay separate: 3 pairs ' + JSON.stringify(dec.G.rowNames));
+  ok(!dec.notes.some(n => /averag/i.test(n)), 'no subjects merged and averaged as technical repeats');
 
   const six = ['A1','A2','A3','B1','B2','B3'];
   const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));

@@ -75,7 +75,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   no subject ID are noted; an option label TP does not have throws (was a warning with defaults).
 - v0.6.1 (PR #1): duplicate exact file names and ambiguous option labels throw; wide two-way ANOVA keeps explicit nA/nB
   (checked against the data only for the long layout); `importTable` stores `originalText` [row, col, text] for cells
-  whose typed value changes their spelling, except missing markers and measurement-like (mostly decimal) columns, and
+  whose typed value changes their spelling, except missing markers; in measurement-like (mostly decimal) columns only
+  spellings that collide (1.1 and 1.10 read as the same number) are kept, so subjects never merge, and
   `buildG` uses it for category columns (subject, group, rows, cols, label, filter).
 
 ## Release checklist

@@ -155,8 +155,10 @@ function typed(v) {
   return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
 }
 // Keeps the spelling of cells whose typed value would change it (1e3 → 1000), so category columns (subjects, groups)
-// can use the original text (buildG). Missing-value markers (NA, n/a, -) stay missing. Columns that look like
-// measurements (most filled cells are decimals) keep nothing, so large tables and saved notebooks do not grow (v0.6.1).
+// can use the original text (buildG). Missing-value markers (NA, n/a, -) stay missing. In columns that look like
+// measurements (most filled cells are decimals) only spellings that would otherwise collide are kept: two different
+// texts that read as the same number (1.1 and 1.10) would merge two subjects or groups. Formatting that changes nothing
+// (12.300 alone) is not stored, so large tables and saved notebooks do not grow (v0.6.1).
 const MISSING = /^(na|n\/a|nan|null|none|-)$/i;
 function importTable(columns, sourceRows) {
   const originalText = [];
@@ -165,11 +167,18 @@ function importTable(columns, sourceRows) {
     for (const row of sourceRows) { const t = row[c] == null ? '' : String(row[c]).trim(); if (!t || MISSING.test(t)) continue; filled++; if (/^[-+]?\d*\.\d+(e[-+]?\d+)?%?$/i.test(t)) dec++; }
     return filled > 0 && dec / filled > 0.5;
   });
-  const rows = sourceRows.map((row, r) => columns.map((_, c) => {
-    const raw = row[c], value = typed(raw);
-    if (!decimalCol[c] && value !== null && typeof raw === 'string' && raw.trim() && raw.trim() !== String(value)) originalText.push([r, c, raw.trim()]);
-    return value;
-  }));
+  const rows = sourceRows.map(row => columns.map((_, c) => typed(row[c])));
+  columns.forEach((_, c) => {
+    const differs = r => { const raw = sourceRows[r][c], v = rows[r][c]; return v !== null && typeof raw === 'string' && raw.trim() !== '' && raw.trim() !== String(v); };
+    let keep = () => true;
+    if (decimalCol[c]) { // keep only values written in more than one way in this column
+      const spellings = new Map();
+      rows.forEach((row, r) => { const v = row[c]; if (v === null) return; const t = String(sourceRows[r][c]).trim(); (spellings.get(v) || spellings.set(v, new Set()).get(v)).add(t); });
+      keep = r => spellings.get(rows[r][c]).size > 1;
+    }
+    for (let r = 0; r < rows.length; r++) if (differs(r) && keep(r)) originalText.push([r, c, String(sourceRows[r][c]).trim()]);
+  });
+  originalText.sort((x, y) => x[0] - y[0] || x[1] - y[1]);
   return originalText.length ? { columns, rows, originalText } : { columns, rows };
 }
 async function readCsv(file) {
