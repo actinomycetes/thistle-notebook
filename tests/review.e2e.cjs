@@ -168,10 +168,16 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const { parseFile } = await import('./js/ingest.js');
     const { buildG } = await import('./js/thistle.js');
     const parsed = await parseFile(new File(['ID,Cond,Y\n1.1,A,1\n1.10,A,2\n2.0,A,3\n1.1,B,4\n1.10,B,6\n2.0,B,8\n'], 'dec.csv'), {});
-    return buildG({ test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' }, parsed.tables.dec);
+    const spec = { test: 'ttest_rel', layout: 'long', subject: 'ID', group: 'Cond', value: 'Y', control: 'A' };
+    const all = buildG(spec, parsed.tables.dec);
+    const filtered = buildG({ ...spec, filter: { ID: ['1.1', '1.10', '2.0'] } }, parsed.tables.dec);
+    let unmatched; try { buildG({ ...spec, filter: { ID: ['1.1', '3.0'] } }, parsed.tables.dec); } catch (e) { unmatched = e.message; }
+    return { ...all, filtered: filtered.G.rowNames, unmatched };
   });
   ok(dec.G.rowNames.length === 3 && dec.G.rowNames.includes('1.1') && dec.G.rowNames.includes('1.10'), 'decimal-looking subject IDs 1.1 and 1.10 stay separate: 3 pairs ' + JSON.stringify(dec.G.rowNames));
   ok(!dec.notes.some(n => /averag/i.test(n)), 'no subjects merged and averaged as technical repeats');
+  ok(JSON.stringify(dec.filtered) === JSON.stringify(dec.G.rowNames), 'a filter listing the three original IDs keeps the same three pairs ' + JSON.stringify(dec.filtered));
+  ok(/3\.0/.test(dec.unmatched || ''), 'a filter value that matches no row stops the run and names it: ' + dec.unmatched);
 
   const six = ['A1','A2','A3','B1','B2','B3'];
   const groups = ds('wide.csv', six, [-1,0,1].map(d => [1,2,4,8,16,32].map(v => v+d)));

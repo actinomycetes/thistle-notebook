@@ -64,9 +64,15 @@ export function buildG(spec, table) {
       rows[r][c] = value;
     }
   }
+  // A filter value matches a cell with the same text, or a cell stored as a plain number with the same value ("2.0" → 2).
+  // Spellings that collide in a column (1.1 and 1.10) are kept as text, so the number match never joins them. A value
+  // that matches no row stops the run (v0.6.1: a filter for "2.0" silently dropped subject 2).
   for (const [k, v] of Object.entries(spec.filter || {})) {
-    const i = ci(k), allowed = [].concat(v).map(norm);
-    rows = rows.filter(r => allowed.includes(norm(r[i])));
+    const i = ci(k), wanted = [].concat(v);
+    const hit = (cell, w) => norm(cell) === norm(w) || (typeof cell === 'number' && String(w).trim() !== '' && Number(String(w).trim()) === cell);
+    const unmatched = wanted.filter(w => !rows.some(r => hit(r[i], w)));
+    if (unmatched.length) throw new Error(`Filter on "${cols[i]}": no rows with ${unmatched.map(w => JSON.stringify(String(w))).join(', ')}. Values present: ${[...new Set(rows.map(r => r[i]).filter(x => x != null).map(String))].slice(0, 20).join(', ')}.`);
+    rows = rows.filter(r => wanted.some(w => hit(r[i], w)));
   }
   if (!rows.length) throw new Error('No rows left after the filter.');
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);
