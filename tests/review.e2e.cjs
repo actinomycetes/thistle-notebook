@@ -285,7 +285,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const ds = (await parseFile(new File(['ID,Cond,Y\n1e3,A,1\n1000,B,2\n'], 'p.csv'), {})).tables.p;
     const prof = profileTable(ds, 'p.csv');
     const f = id => buildG({ layout: 'long', group: 'Cond', value: 'Y', filter: { ID: id } }, ds).G.groups.map(g => g.name);
-    const blob = tablesToXlsx([{ title: 'T', header: ['ID', 'Y'], rows: [['001', '1.5'], ['9007199254740993', '2.25']] }]);
+    const blob = tablesToXlsx([{ title: 'T', header: ['ID', 'Y'], rows: [['001', '1.5'], ['9007199254740993', '2.25'], ['1e309', '1e-400'], ['-1e-310', '0e-400']] }]);
     const z = await unzip(new Uint8Array(await blob.arrayBuffer())), sh = await z.text('xl/worksheets/sheet1.xml');
     return { flowNames: flow.rows.map(r => r[0]), fg, prof, f1: f('1e3'), f2: f('1000'), sh };
   });
@@ -295,6 +295,10 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(JSON.stringify(idx.f1) === '["A"]' && JSON.stringify(idx.f2) === '["B"]', 'an exact filter on 1e3 and on 1000 selects one row each ' + JSON.stringify([idx.f1, idx.f2]));
   ok(/t="inlineStr"[^>]*><is><t[^>]*>001</.test(idx.sh) && /t="inlineStr"[^>]*><is><t[^>]*>9007199254740993</.test(idx.sh), 'Excel keeps 001 and a 16-digit ID as text');
   ok(/<v>1\.5<\/v>/.test(idx.sh) && /<v>2\.25<\/v>/.test(idx.sh), 'Excel keeps ordinary measurements numeric');
+  for (const [ref, value] of [['A4', '1e309'], ['B4', '1e-400'], ['A5', '-1e-310']]) {
+    ok(idx.sh.includes(`<c r="${ref}" t="inlineStr" s="2"><is><t xml:space="preserve">${value}</t>`), `Excel preserves out-of-range ${value} as text`);
+  }
+  ok(idx.sh.includes('<c r="B5" s="2"><v>0</v></c>'), 'a genuine zero stays numeric');
   // the same rule for column names and control groups
   r = await run({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'y', control: 'ctrl', dataset: 'cg.csv' }, [ds('cg.csv', ['G', 'Y', 'y'],
     [['Ctrl', 1, 10], ['Ctrl', 2, 11], ['ctrl', 5, 20], ['ctrl', 6, 21], ['Ctrl', 1.5, 12], ['ctrl', 5.5, 22]])]);
