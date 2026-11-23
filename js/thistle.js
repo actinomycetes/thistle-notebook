@@ -204,7 +204,8 @@ export function buildG(spec, table) {
   } else if (layout === 'survival') {
     const ti = ci(spec.time), ei = ci(spec.event), gi = ci(spec.group);
     // events must be coded 0 (censored) or 1 (event): any other code is refused, never read as an event (v0.6.3)
-    const badEv = []; rows.forEach((r, k) => { const e = num(r[ei]); if (e != null && e !== 0 && e !== 1) badEv.push(`row ${k + 1}: ${r[ei]}`); });
+    // missing = blank or a missing marker (typed as null); any other text ("event") is an invalid code, not missing
+    const badEv = []; rows.forEach((r, k) => { const raw = cat(r, ei); if (raw == null || String(raw).trim() === '') return; const e = num(r[ei]); if (e !== 0 && e !== 1) badEv.push(`row ${k + 1}: ${raw}`); });
     if (badEv.length) throw new Error(`"${cols[ei]}" must be 1 (event) or 0 (censored); found ${badEv.slice(0, 5).join('; ')}${badEv.length > 5 ? ` and ${badEv.length - 5} more` : ''}. Recode the column first.`);
     const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && cat(r, gi) != null);
     if (keep.length < rows.length) notes.push(`${rows.length - keep.length} row(s) with a missing time, event or group were left out.`);

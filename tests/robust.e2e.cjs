@@ -170,6 +170,30 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(/2 and 3/.test(inp.xlY.err || ''), 'two columns headed Y (Excel) are refused too ' + JSON.stringify(inp.xlY));
   ok(JSON.stringify(inp.csvy.ok) === '[7,8]', 'a column y next to them is still usable by its exact name ' + JSON.stringify(inp.csvy));
 
+  // [P2] eligibility messages only for excluded sources: sheet and duplicate-name errors keep their own wording
+  const em = await page.evaluate(async () => {
+    const S = window.thistleNotebook, keep = S.sources;
+    const mk = (id, extra = {}) => ({ id, nb: S.nb.id, name: 'eligible.csv', kind: 'dataset', role: 'dataset', enabled: true, status: 'ready', tabs: [S.nb.viewTab],
+      tables: { available: { columns: ['A', 'B'], rows: [[1, 4], [3, 6], [2, 5], [4, 7]] } }, ...extra });
+    const msg = (sp, ids) => ({ id: 'q' + Math.random(), nb: S.nb.id, role: 'assistant', content: '```thistle-plot\n' + JSON.stringify(sp) + '\n```', t: Date.now(), meta: { sourceIds: ids } });
+    const sp = sheet => ({ test: 'ttest_ind', layout: 'wide', columns: ['A', 'B'], dataset: 'eligible.csv', sheet });
+    S.sources = [mk('e1')];
+    const bad = await S._t.runSpec(msg(sp('bad'), ['e1']), 0), good = await S._t.runSpec(msg(sp('available'), ['e1']), 0);
+    S.sources = [mk('e1'), mk('e2')];
+    const dup = await S._t.runSpec(msg(sp('available'), ['e1', 'e2']), 0);
+    S.sources = keep;
+    return { bad: bad.error, good: good.status, dup: dup.error };
+  });
+  ok(/Sheet "bad" not found/.test(em.bad || '') && !/did not use|not one of the sources|not ticked/.test(em.bad || ''), 'a wrong sheet in an eligible dataset says the sheet is missing ' + em.bad);
+  ok(em.good === 'ok', 'the same dataset with the right sheet runs');
+  ok(/could mean|Multiple loaded|more than one/i.test(em.dup || '') && !/not one of the sources|not ticked/.test(em.dup || ''), 'two eligible files with the same name give the duplicate-name error ' + em.dup);
+  // [P2] a text event code is invalid, not missing
+  const ev = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    try { buildG({ test: 'km', layout: 'survival', time: 'T', event: 'E', group: 'C' }, { columns: ['T', 'E', 'C'], rows: [[5, 1, 'A'], [6, 0, 'A'], [7, 'event', 'B'], [8, 1, 'B'], [9, null, 'B']] }); return null; } catch (e) { return e.message; }
+  });
+  ok(/row 3/.test(ev || '') && /event/.test(ev || ''), 'a text event code ("event") is refused as invalid, naming the row ' + ev);
+
   // [P2] a dataset too large to keep in the notebook becomes usable after relinking its original (this session only)
   const big = await page.evaluate(async () => {
     const S = window.thistleNotebook, db = await import('./js/store.js'), { parseFile } = await import('./js/ingest.js');

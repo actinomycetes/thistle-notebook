@@ -720,10 +720,15 @@ function datasetsFor(m) {
   return enabledSources().filter(s => tablesOf(s) && (!used || used.has(s.id))).map(s => ({ name: s.name, tables: tablesOf(s) }));
 }
 function findEligible(spec, m) {
-  try { return findTable(spec, datasetsFor(m)); }
+  const eligible = datasetsFor(m);
+  try { return findTable(spec, eligible); }
   catch (e) {
+    // explain eligibility only when the named dataset exists solely among excluded sources; a sheet, ambiguity or other
+    // error about an eligible dataset keeps its own message (v0.6.4, independent review)
     const want = String(spec.dataset ?? '').trim().toLowerCase(), stem = n => n.toLowerCase().replace(/\.\w+$/, '');
-    const off = want && S.sources.find(s => tablesOf(s) && (s.name.toLowerCase() === want || stem(s.name) === want));
+    const named = n => want && (n.toLowerCase() === want || stem(n) === want);
+    if (!want || eligible.some(d => named(d.name))) throw e;
+    const off = S.sources.find(s => tablesOf(s) && named(s.name));
     if (off) throw new Error(`Dataset "${off.name}" is ${!off.enabled || !inActiveTab(off) ? 'not ticked, or only in a source tab that is not ticked' : 'not one of the sources this answer used'}, so it is not used. Tick it (and its tab) and ask again to analyse it.`);
     throw e;
   }

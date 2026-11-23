@@ -103,6 +103,9 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   unticked dataset); survival events must be 0/1 (else throw, naming rows) and incomplete rows are noted; `pickName`
   throws on duplicate exact names (positions, rename); `tablesResult` returns `sessionTables` above the 600,000-cell cap
   and `linkFile` caches them for the session only. PR #2: `asNumber` keeps out-of-range/subnormal numbers as text.
+- v0.6.4: `findEligible` gives the eligibility message only when the named dataset exists solely among excluded sources
+  (sheet and duplicate-name errors keep their wording); survival events treat only blanks/missing markers as missing,
+  any other text code is invalid.
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README
