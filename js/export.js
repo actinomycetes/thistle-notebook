@@ -41,7 +41,14 @@ const colName = i => { let s = ''; i++; while (i) { const m = (i - 1) % 26; s = 
 const NUM = /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i;
 // A cell becomes an Excel number only if Excel will show the same value: identifiers with leading zeros (001) and numbers
 // with more than 15 significant digits (9007199254740993 would become ...992) stay text (v0.6.1, wider review).
-const asNumber = s => NUM.test(s) && !/^[-+]?0\d/.test(s) && s.replace(/e.*$/i, '').replace(/[^\d]/g, '').replace(/^0+/, '').length <= 15;
+function asNumber(s) {
+  if (!NUM.test(s) || /^[-+]?0\d/.test(s)) return false;
+  const digits = s.split(/e/i)[0].replace(/\D/g, '').replace(/^0+/, '');
+  if (digits.length > 15) return false;
+  // Excel does not support subnormal numbers. A nonzero mantissa must survive conversion.
+  const value = Number(s);
+  return Number.isFinite(value) && (digits.length === 0 || Math.abs(value) >= 2.2250738585072014e-308);
+}
 
 function sheetXml(header, rows) {
   const ncol = Math.max(header.length, ...rows.map(r => r.length));
