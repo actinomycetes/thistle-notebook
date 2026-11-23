@@ -20,7 +20,8 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const one = mk([1, 3, 2, 4], [4, 6, 5, 7]), two = mk([1, 3, 2, 4], [54, 56, 55, 57]);
     const bad = [{ test: 'anova2', layout: 'wide', columns: ['A', 'B'] }, one[1]];
     // compare results without Thistle Plot's "Run <date> <time>" stamp, which changes when a minute passes between runs
-    const strip = t => t.replace(/Run \d{1,2}\/\d{1,2}\/\d{2,4},? \d{1,2}:\d{2}(:\d{2})?\s?([AP]M)?/g, 'Run <time>');
+    // (the date follows the browser locale: 11/23/2026 06:34 PM, 23/11/2026 18:34, 23.11.2026 18:34, 2026/11/23 18:34)
+    const strip = t => t.replace(/Run [\d./\-, ]+?\d{1,2}:\d{2}(:\d{2})?(\s?[AP]M)?/gi, 'Run <time>');
     const run = ([sp, G]) => S.tp.run({ ...sp }, G).then(r => strip(r.text), e => 'ERR ' + e.message);
     const s1 = await run(one), s2 = await run(two);
     const [p1, p2] = await Promise.all([run(one), run(two)]), [q2, q1] = await Promise.all([run(two), run(one)]);
