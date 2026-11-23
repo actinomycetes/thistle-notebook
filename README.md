@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.6.2). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.6.3). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -137,6 +137,11 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   even after the source is removed; re-reading a source keeps the previous version if the new file cannot be read or
   saved; running an analysis marks the notebook as unsaved; citations open the right source after a notebook is saved
   and reopened; analyses run one at a time in Thistle Plot, so two cards can no longer get each other's results.
+- **v0.6.3:** a failed rerun keeps the previous successful result (labelled, still downloadable) and the AI is told
+  only about the failure; analyses use only datasets that are ticked, in an active tab and used by that answer; survival
+  event codes other than 0/1 are refused; two columns with the same header must be renamed before use; a dataset too
+  large to keep in the notebook can be analysed after linking its original (for that session); Excel exports keep
+  out-of-range numbers such as 1e309 as text.
 - **Thistle Flow**: in 🔬 Thistle apps → Thistle Flow, load FCS files and gate as usual, then **⬇ Add TF statistics as
   source**. The population statistics become a dataset the assistant can analyse and send on to Thistle Plot. `.tflow`
   files can also be added as sources (gating hierarchy and samples).
@@ -169,7 +174,7 @@ exports (file structure checked),
 resizable panes and closing notebooks. `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.6.2
+## Known limitations of v0.6.3
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional

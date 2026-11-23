@@ -20,8 +20,9 @@ const norm = s => String(s ?? '').trim().toLowerCase();
 // it is the only one ("ctrl" never picks "Ctrl" while a "ctrl" also exists). -1 = none; throws when two names differ
 // only in case and neither is exact (v0.6.1, independent review).
 function pickName(names, want, what) {
-  const w = String(want ?? '').trim(), exact = names.findIndex(n => String(n ?? '').trim() === w);
-  if (exact >= 0) return exact;
+  const w = String(want ?? '').trim(), hits = names.map((n, i) => String(n ?? '').trim() === w ? i : -1).filter(i => i >= 0);
+  if (hits.length > 1) throw new Error(`${what} "${want}" appears ${hits.length} times (positions ${hits.map(i => i + 1).join(' and ')}); rename the duplicates in the file so each name is unique (v0.6.3).`);
+  if (hits.length) return hits[0];
   const loose = names.map((n, i) => norm(n) === norm(w) ? i : -1).filter(i => i >= 0);
   if (loose.length > 1) throw new Error(`${what} "${want}" could mean ${loose.map(i => `"${names[i]}"`).join(' or ')}; write it exactly as in the file.`);
   return loose.length ? loose[0] : -1;
@@ -202,7 +203,11 @@ export function buildG(spec, table) {
     G.groups = C.map((c, b) => ({ name: c, reps: ['Value'], data: R.map((_, a) => [tab[a][b]]) }));
   } else if (layout === 'survival') {
     const ti = ci(spec.time), ei = ci(spec.event), gi = ci(spec.group);
+    // events must be coded 0 (censored) or 1 (event): any other code is refused, never read as an event (v0.6.3)
+    const badEv = []; rows.forEach((r, k) => { const e = num(r[ei]); if (e != null && e !== 0 && e !== 1) badEv.push(`row ${k + 1}: ${r[ei]}`); });
+    if (badEv.length) throw new Error(`"${cols[ei]}" must be 1 (event) or 0 (censored); found ${badEv.slice(0, 5).join('; ')}${badEv.length > 5 ? ` and ${badEv.length - 5} more` : ''}. Recode the column first.`);
     const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && cat(r, gi) != null);
+    if (keep.length < rows.length) notes.push(`${rows.length - keep.length} row(s) with a missing time, event or group were left out.`);
     const names = putFirst(levels(gi, spec.order), spec.control);
     G.nRows = keep.length; G.rowNames = keep.map((r, k) => `Subject ${k + 1}`);
     G.groups = [{ name: cols[ti], reps: ['Value'], data: keep.map(r => [num(r[ti])]) },

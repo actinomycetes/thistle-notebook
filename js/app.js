@@ -357,7 +357,7 @@ async function linkFile(s, file) {
   if (s.file?.sha256 && file._sha256 === undefined) file._sha256 = file.size === s.file.size ? await fileHash(file) : 'size-differs';
   S.files.set(s.id, file);
   if (s.kind === 'dataset' && !s.tables && !S.tableCache.has(s.id)) {
-    try { const r = await parseFile(file, parseCtx(s)); if (r.tables) S.tableCache.set(s.id, r.tables); } catch (e) { toast(`Could not read the table in ${file.name}: ${e.message}`, true); }
+    try { const r = await parseFile(file, parseCtx(s)); const t = r.tables || r.sessionTables; if (t) S.tableCache.set(s.id, t); } catch (e) { toast(`Could not read the table in ${file.name}: ${e.message}`, true); }
   }
   renderSources();
 }
@@ -713,7 +713,21 @@ function setBusy(b) { S.busy = b; $('#btnSend').disabled = b; $('#btnStop').disa
 // ---------------- Thistle Plot analysis cards ----------------
 // Tables kept in the notebook, or re-read this session from a linked original (datasets too large to keep)
 const tablesOf = s => s.tables || S.tableCache.get(s.id) || null;
-function datasetsNow() { return S.sources.filter(tablesOf).map(s => ({ name: s.name, tables: tablesOf(s) })); }
+// Datasets an analysis card may use: ticked, ready and in an active tab (as offered to the model), and among the sources
+// the answer was written from (v0.6.3: an unticked dataset could run and reach the interpretation)
+function datasetsFor(m) {
+  const used = Array.isArray(m?.meta?.sourceIds) ? new Set(m.meta.sourceIds) : null;
+  return enabledSources().filter(s => tablesOf(s) && (!used || used.has(s.id))).map(s => ({ name: s.name, tables: tablesOf(s) }));
+}
+function findEligible(spec, m) {
+  try { return findTable(spec, datasetsFor(m)); }
+  catch (e) {
+    const want = String(spec.dataset ?? '').trim().toLowerCase(), stem = n => n.toLowerCase().replace(/\.\w+$/, '');
+    const off = want && S.sources.find(s => tablesOf(s) && (s.name.toLowerCase() === want || stem(s.name) === want));
+    if (off) throw new Error(`Dataset "${off.name}" is ${!off.enabled || !inActiveTab(off) ? 'not ticked, or only in a source tab that is not ticked' : 'not one of the sources this answer used'}, so it is not used. Tick it (and its tab) and ask again to analyse it.`);
+    throw e;
+  }
+}
 function tpCard(m, k) {
   const parsed = parseSpecs(m.content)[k];
   const card = h('div', { class: 'tp-card' });
@@ -722,14 +736,14 @@ function tpCard(m, k) {
   const spec = parsed.spec, res = m.meta?.tp?.[k];
   const testName = TP_TESTS[spec.test]?.[0] || spec.test;
   let built = null, buildErr = null;
-  try { const { table } = findTable(spec, datasetsNow()); built = buildG({ ...spec }, table); } catch (e) { buildErr = e.message; }
+  try { const { table } = findEligible(spec, m); built = buildG({ ...spec }, table); } catch (e) { buildErr = e.message; }
   card.append(h('div', { class: 'tp-title' }, '📊 ', spec.title || testName,
     res ? h('span', { class: 'status ' + (res.status === 'ok' ? 'ok' : 'err') }, res.status === 'ok' ? 'run in Thistle Plot' : 'failed') : h('span', { class: 'status' }, 'proposed')),
   h('div', { class: 'tp-meta' }, `${testName} · ${spec._dataset || spec.dataset || '?'}${spec.sheet ? ' [' + spec.sheet + ']' : ''} · ${describeSpec(spec)}`),
   spec.why ? h('div', {}, '💡 ', spec.why) : null);
   // A successful run keeps the table it used (res.G): its .tplot and 👁 show that table with that result, even if the source
   // was edited or removed since (v0.6.2: the download paired an old result with a freshly rebuilt table)
-  const ranG = res?.status === 'ok' && res.G ? res.G : null;
+  const okRun = res?.status === 'ok' ? res : res?.lastOk || null, ranG = okRun?.G || null;
   if (buildErr && !ranG) card.append(h('div', { class: 'err-box' }, buildErr));
   if (buildErr && ranG) card.append(h('div', { class: 'hint' }, `The data for this analysis is not available now (${buildErr}). ⤓ .tplot and 👁 still give the table and result of the run below.`));
   if (ranG && built && JSON.stringify(ranG) !== JSON.stringify(built.G)) card.append(h('div', { class: 'warn-box' }, 'The source data changed since this run. ⤓ .tplot and 👁 give the table the result below came from; ↻ Run again to use the current data.'));
@@ -739,22 +753,25 @@ function tpCard(m, k) {
       G.groups.map(g => `${g.name} (n=${g.data.flat().filter(v => v !== '' && v != null).length})`).join(', '), built.notes.length ? ' · ' + built.notes.join(' ') : ''));
   }
   const btns = h('div', { class: 'tp-btns' });
-  const tableG = ranG || built?.G, withResult = res?.status === 'ok' && (ranG || built) ? res : null;
+  const tableG = ranG || built?.G, withResult = okRun && (ranG || built) ? okRun : null;
   if (built) btns.append(h('button', { class: 'btn small primary', onclick: async e => { e.target.disabled = true; await runSpec(m, k); } }, res ? '↻ Run again' : '▶ Run in Thistle Plot'));
+  const when = t => t ? new Date(t).toLocaleString() : 'an earlier run';
   if (tableG) {
     btns.append(h('button', { class: 'btn small', title: ranG ? 'Thistle Plot project with the table and result of this run' : 'Thistle Plot project with this table (not run yet)', onclick: () => saveText(tplotFile(tableG, withResult, withResult?.plot, withResult?.appVersion), `${safeName(spec.title || spec.test)}.tplot`, 'application/json') }, '⤓ .tplot'),
       h('button', { class: 'btn small', title: 'Show Thistle Plot with this table loaded', onclick: async () => { try { await S.tp.show(tableG); openDrawer('tp'); } catch (e) { toast(e.message, true); } } }, '👁 Open in Thistle Plot'));
     if (res?.status === 'ok' && !m.meta.interpreted) btns.append(h('button', { class: 'btn small', onclick: () => sendResults(m, 0, true) }, '💬 Interpret results'));
   }
   card.append(btns);
-  if (res?.status === 'ok') {
+  if (res?.status === 'err') card.append(h('div', { class: 'err-box' }, `The latest run failed (${when(res.at)}): ${res.error}`));
+  if (okRun) {
     const box = h('div', { class: 'tp-result' });
-    box.innerHTML = window.DOMPurify.sanitize(res.html, { FORBID_TAGS: ['button', 'input', 'select', 'style'], FORBID_ATTR: ['style', 'onclick'] });
-    if (res.plot) box.append(h('img', { src: res.plot.image, alt: res.plot.title }));
-    if (res.unknown?.length) box.prepend(h('div', { class: 'warn-box' }, 'Options not found in Thistle Plot (defaults used): ' + res.unknown.join('; ')));
-    if (res.alerts?.length) box.prepend(h('div', { class: 'warn-box' }, 'Thistle Plot says: ' + res.alerts.join(' ')));
+    if (res.status === 'err') box.append(h('div', { class: 'hint' }, `Previous successful run (${when(okRun.at)}), kept for reference; ⤓ .tplot and 👁 give this run.`));
+    const body = h('div'); body.innerHTML = window.DOMPurify.sanitize(okRun.html, { FORBID_TAGS: ['button', 'input', 'select', 'style'], FORBID_ATTR: ['style', 'onclick'] }); box.append(body);
+    if (okRun.plot) box.append(h('img', { src: okRun.plot.image, alt: okRun.plot.title }));
+    if (okRun.unknown?.length) box.prepend(h('div', { class: 'warn-box' }, 'Options not found in Thistle Plot (defaults used): ' + okRun.unknown.join('; ')));
+    if (okRun.alerts?.length) box.prepend(h('div', { class: 'warn-box' }, 'Thistle Plot says: ' + okRun.alerts.join(' ')));
     card.append(box);
-  } else if (res?.status === 'err') card.append(h('div', { class: 'err-box' }, res.error));
+  }
   return card;
 }
 function describeSpec(s) {
@@ -772,11 +789,15 @@ async function runSpec(m, k) {
   const spec = parseSpecs(m.content)[k]?.spec;
   m.meta.tp ||= {};
   try {
-    const { table } = findTable(spec, datasetsNow());
+    const { table } = findEligible(spec, m);
     const sp = { ...spec }, built = buildG(sp, table);
     const r = await S.tp.run(sp, built.G);
-    m.meta.tp[k] = { status: 'ok', ...r, notes: built.notes, G: built.G };
-  } catch (e) { console.error(e); m.meta.tp[k] = { status: 'err', error: e.message }; }
+    m.meta.tp[k] = { status: 'ok', ...r, notes: built.notes, G: built.G, at: Date.now() };
+  } catch (e) {
+    // a failed attempt keeps the last successful run beside it (v0.6.3: the error replaced it)
+    console.error(e); const prev = m.meta.tp[k], lastOk = prev?.status === 'ok' ? prev : prev?.lastOk;
+    m.meta.tp[k] = { status: 'err', error: e.message, at: Date.now(), ...(lastOk ? { lastOk } : {}) };
+  }
   await db.put('messages', m); if (S.nb) await db.touch(S.nb); // a new result is an unsaved change (v0.6.2)
   const old = $(`.msg[data-id="${m.id}"]`); if (old) old.replaceWith(messageEl(m));
   return m.meta.tp[k];
@@ -786,7 +807,7 @@ async function runAllAndInterpret(m, depth) {
   for (let k = 0; k < specs.length; k++) if (specs[k].ok) await runSpec(m, k);
   await sendResults(m, depth);
 }
-async function sendResults(m, depth, manual = false) {
+function resultsParts(m) {
   const specs = parseSpecs(m.content), parts = [];
   specs.forEach((p, k) => {
     const r = m.meta.tp?.[k]; if (!p.ok || !r) return;
@@ -796,6 +817,11 @@ async function sendResults(m, depth, manual = false) {
       (r.unknown?.length ? `Options NOT found (defaults used): ${r.unknown.join('; ')}\n` : '') + (r.alerts?.length ? `Thistle Plot messages: ${r.alerts.join(' ')}\n` : '') +
       `\n${r.text.slice(0, 12000)}\n\nOptions available for this test: ${r.options.join('; ')}`);
   });
+  return parts;
+}
+const resultsDigest = m => resultsParts(m).join('\n\n---\n\n');
+async function sendResults(m, depth, manual = false) {
+  const parts = resultsParts(m);
   if (!parts.length) return;
   m.meta.interpreted = true; await db.put('messages', m);
   const content = parts.join('\n\n---\n\n');
@@ -1192,4 +1218,4 @@ async function init() {
 
 init().catch(e => { console.error(e); document.body.prepend(h('div', { class: 'err-box' }, 'Thistle Notebook failed to start: ' + e.message)); });
 window.thistleNotebook = S; // handy for debugging, like window.thistleFlow
-S._t = { tpCard, runSpec, rereadSource, citeSource }; // for tests/robust.e2e.cjs
+S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile }; // for tests/robust.e2e.cjs

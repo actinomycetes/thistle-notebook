@@ -96,7 +96,13 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   after the source is removed); `rereadSource` parses first and commits with `db.replaceSource` (one transaction over
   chunks + sources); `runSpec` touches the notebook; `saveTnote` sets `savedAt` after the export exists;
   `importNotebook` remaps `meta.cites[].srcId` and `meta.sourceIds`; `citeSource` resolves by id, then a unique name.
-  `S._t` exposes `tpCard`, `runSpec`, `rereadSource`, `citeSource` to tests.
+  `S._t` exposes `tpCard`, `runSpec`, `rereadSource`, `citeSource`, `resultsDigest`, `linkFile` to tests.
+- v0.6.3 (post-merge review, `tests/robust.e2e.cjs`): a failed `runSpec` stores `{status:'err', error, at, lastOk}` (the
+  card shows the failure and labels the previous run; `resultsParts` reports only the failure to the model); cards and
+  runs use `datasetsFor(m)` = `enabledSources()` with tables, limited to `m.meta.sourceIds` (`findEligible` explains an
+  unticked dataset); survival events must be 0/1 (else throw, naming rows) and incomplete rows are noted; `pickName`
+  throws on duplicate exact names (positions, rename); `tablesResult` returns `sessionTables` above the 600,000-cell cap
+  and `linkFile` caches them for the session only. PR #2: `asNumber` keeps out-of-range/subnormal numbers as text.
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

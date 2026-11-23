@@ -1,6 +1,6 @@
 {
   "name": "thistle-notebook",
-  "version": "0.6.2",
+  "version": "0.6.3",
   "private": true,
   "description": "Source-grounded research notebook for the Thistle suite, using the University of Edinburgh ELM API from the browser",
   "author": "Takanobu Tagawa (The University of Edinburgh)",

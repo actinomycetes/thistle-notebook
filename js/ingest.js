@@ -219,7 +219,9 @@ function tablesResult(tables, name) {
   const keys = Object.keys(tables);
   const segs = keys.map(k => ({ loc: `sheet ${k}`, text: profileTable(tables[k], keys.length > 1 ? `${name} [${k}]` : name) }));
   const cells = keys.reduce((s, k) => s + tables[k].rows.length * tables[k].columns.length, 0);
-  return { kind: 'dataset', segments: segs, tables: cells <= 600000 ? tables : null,
+  // above 600,000 cells the table is not stored in the notebook, but it is returned for this session (sessionTables), so a
+  // relinked original can still be analysed (v0.6.3)
+  return { kind: 'dataset', segments: segs, tables: cells <= 600000 ? tables : null, sessionTables: tables,
     meta: { sheets: Object.fromEntries(keys.map(k => [k, [tables[k].rows.length, tables[k].columns.length]])) } };
 }
 
