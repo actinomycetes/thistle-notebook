@@ -203,6 +203,22 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(icon.frame === 0, 'the embedded Thistle Plot frame has no tab icon links (Thistle Plot ≥ 0.19.1) ' + JSON.stringify(icon));
   ok(icon.top >= 1 && /^Thistle Notebook v/.test(icon.title) && icon.retitles, 'Notebook keeps its own icon and sets its title again after the frame loads ' + JSON.stringify(icon));
 
+  // opening two notebooks quickly: the one opened last wins, with its own sources and messages (a slower earlier load
+  // used to finish last and leave notebook B selected with notebook A's sources; same race as Thistle Flow v0.23.2)
+  const race = await page.evaluate(async () => {
+    const S = window.thistleNotebook, db = await import('./js/store.js'), back = S.nb.id;
+    const a = await db.createNotebook('Race A'), b = await db.createNotebook('Race B');
+    await db.put('sources', { id: 'raceA', nb: a.id, name: 'a.txt', kind: 'text', status: 'ready', enabled: true, created: 1, tabs: [] });
+    await db.put('sources', { id: 'raceB', nb: b.id, name: 'b.txt', kind: 'text', status: 'ready', enabled: true, created: 1, tabs: [] });
+    window.TN_OPEN_DELAY = id => id === a.id ? 400 : 0;     // test hook: make notebook A's load slower
+    await Promise.all([S._t.openNotebook(a.id), S._t.openNotebook(b.id)]);
+    delete window.TN_OPEN_DELAY;
+    const out = { nb: S.nb.name, sources: S.sources.map(x => x.id) };
+    await S._t.openNotebook(back); await db.deleteNotebook(a.id); await db.deleteNotebook(b.id);
+    return out;
+  });
+  ok(race.nb === 'Race B' && JSON.stringify(race.sources) === '["raceB"]', 'opening A then B quickly leaves B open with only its own sources ' + JSON.stringify(race));
+
   // [P2] a dataset too large to keep in the notebook becomes usable after relinking its original (this session only)
   const big = await page.evaluate(async () => {
     const S = window.thistleNotebook, db = await import('./js/store.js'), { parseFile } = await import('./js/ingest.js');

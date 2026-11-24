@@ -108,6 +108,8 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
 - v0.6.4: `findEligible` gives the eligibility message only when the named dataset exists solely among excluded sources
   (sheet and duplicate-name errors keep their wording); survival events treat only blanks/missing markers as missing,
   any other text code is invalid.
+- v0.6.6: `openNotebook` loads into locals and switches only if it is still the latest open (`openSeq`); test hook
+  `window.TN_OPEN_DELAY(id)` forces the race in `tests/robust.e2e.cjs` (same race as TF v0.23.2's session restore).
 
 ## Release checklist
 1. Bump the version in `js/version.js`, `<title>` and `#app-version` in `index.html`, `package.json`, README

@@ -132,12 +132,19 @@ async function renderNbSelect() {
   list.forEach(n => sel.append(h('option', { value: n.id }, (n.onCampusOnly ? '🏛 ' : '') + n.name)));
   if (S.nb) sel.value = S.nb.id;
 }
+// Opening a notebook loads everything first and switches only if no later open has started meanwhile: a slower earlier
+// load used to finish last, leaving one notebook selected with another's sources and chat (v0.6.6; the same race was
+// found in Thistle Flow's session restore, TF v0.23.2)
+let openSeq = 0;
 async function openNotebook(id) {
-  S.nb = await db.get('notebooks', id);
-  if (!S.nb) return;
-  localStorage.setItem('tn.lastNb', id);
-  S.chunkCache.clear();
-  [S.sources, S.notes, S.messages] = await Promise.all([db.byNb('sources', id), db.byNb('notes', id), db.byNb('messages', id)]);
+  const my = ++openSeq;
+  const nb = await db.get('notebooks', id);
+  if (!nb || my !== openSeq) return;
+  const slow = window.TN_OPEN_DELAY?.(id); if (slow) await sleep(slow); // test hook (tests/robust.e2e.cjs)
+  const loaded = await Promise.all([db.byNb('sources', id), db.byNb('notes', id), db.byNb('messages', id)]);
+  if (my !== openSeq) return; // a later open won
+  S.nb = nb; localStorage.setItem('tn.lastNb', id); S.chunkCache.clear();
+  [S.sources, S.notes, S.messages] = loaded;
   S.sources.sort((a, b) => a.created - b.created); S.notes.sort((a, b) => b.t - a.t); S.messages.sort((a, b) => a.t - b.t);
   S.files.clear(); S.tableCache.clear(); S.histPos = -1;
   await ensureTabs();
@@ -1223,4 +1230,4 @@ async function init() {
 
 init().catch(e => { console.error(e); document.body.prepend(h('div', { class: 'err-box' }, 'Thistle Notebook failed to start: ' + e.message)); });
 window.thistleNotebook = S; // handy for debugging, like window.thistleFlow
-S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile }; // for tests/robust.e2e.cjs
+S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile, openNotebook }; // for tests/robust.e2e.cjs
