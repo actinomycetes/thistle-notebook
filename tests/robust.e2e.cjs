@@ -232,11 +232,22 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const m = { id: 'bigm', nb: S.nb.id, role: 'assistant', content: '```thistle-plot\n' + JSON.stringify({ test: 'ttest_ind', layout: 'long', group: 'G', value: 'A', dataset: 'big.csv' }) + '\n```', t: Date.now(), meta: {} };
     const res = await S._t.runSpec(m, 0);
     const saved2 = JSON.parse(await db.exportNotebook(S.nb.id)).sources.find(x => x.id === 'bigsrc');
+    await S._t.rereadSource(s);
+    const afterRead = S.tableCache.get(s.id);
+    S.tableCache.delete(s.id); // simulate reopening the saved source
+    const edited = new File([lines.join('\n').replace('y,0,', 'y,99,')], 'big.csv');
+    await S._t.linkFile(s, edited);
+    const usedBeforeRead = S.tableCache.has(s.id);
+    await S._t.rereadSource(s);
+    const updated = S.tableCache.get(s.id);
+    const firstValue = updated && Object.values(updated)[0].rows[0][1];
+    const accepted = edited._sha256 === s.file.sha256;
     S.sources = S.sources.filter(x => x.id !== 'bigsrc'); await db.del('sources', 'bigsrc');
-    return { keptInFile: !!r.tables, saved: !!saved?.tables, status: res.status, err: res.error, saved2: !!saved2?.tables };
+    return { afterRead: !!afterRead, usedBeforeRead, firstValue, accepted, keptInFile: !!r.tables, saved: !!saved?.tables, status: res.status, err: res.error, saved2: !!saved2?.tables };
   });
   ok(!big.keptInFile && !big.saved, 'a dataset over 600,000 cells is not stored in the notebook');
   ok(big.status === 'ok', 'after relinking its original it can be analysed in this session ' + (big.err || ''));
+  ok(big.afterRead && !big.usedBeforeRead && Number(big.firstValue) === 99 && big.accepted, 'large table changes only after a successful re-read ' + JSON.stringify(big));
   ok(!big.saved2, 'and it still stays out of the saved notebook');
 
   await b.close(); process.exit(fails ? 1 : 0);
