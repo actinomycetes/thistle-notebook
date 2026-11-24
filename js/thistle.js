@@ -80,6 +80,7 @@ export function buildG(spec, table) {
   // by another filter, which let {Site: South, ID: S1} pick s1); matches are combined within a column and intersected
   // across columns. A value that matches nothing or two spellings stops the run, and so does an empty intersection.
   const filters = Object.entries(spec.filter || {});
+  const filteredRowNumbers = [];
   if (filters.length) {
     const text = c => c == null ? null : String(c).trim(), problems = [], keep = [];
     for (const [k, v] of filters) {
@@ -100,10 +101,15 @@ export function buildG(spec, table) {
       keep.push(picks);
     }
     if (problems.length) throw new Error(`Filter: ${problems.join('; ')}. Use the values exactly as written in the file.`);
-    rows = rows.filter(r => keep.every(p => p.has(r)));
+    rows = rows.filter((r, i) => {
+      if (!keep.every(p => p.has(r))) return false;
+      filteredRowNumbers.push(i + 1);
+      return true;
+    });
     if (!rows.length) throw new Error(`Filter: no rows match all of ${filters.map(([k, v]) => `${k} = ${[].concat(v).join(' or ')}`).join(' and ')}.`);
   }
   if (!rows.length) throw new Error('No rows left after the filter.');
+  const dataRowNumber = k => filteredRowNumbers[k] ?? k + 1;
   const num = v => typeof v === 'number' && isFinite(v) ? v : (v != null && v !== '' && isFinite(+v) ? +v : null);
   const cell = v => (num(v) ?? '');
   // Levels of a category column in file order; `order` (field = its spec name) puts the listed levels first. A level
@@ -191,7 +197,7 @@ export function buildG(spec, table) {
     const count = (v, k) => {
       const x = typeof v === 'number' ? v : (v == null || String(v).trim() === '' ? NaN : Number(String(v).trim()));
       if (Number.isInteger(x) && x >= 0) return x;
-      bad.push(`row ${k + 1} (${r_label(k)}): ${v == null || String(v).trim() === '' ? 'blank' : JSON.stringify(v)}`); return 0;
+      bad.push(`row ${dataRowNumber(k)} (${r_label(k)}): ${v == null || String(v).trim() === '' ? 'blank' : JSON.stringify(v)}`); return 0;
     };
     const r_label = k => `${cat(rows[k], ri)} × ${cat(rows[k], cj)}`;
     rows.forEach((r, k) => { const a = R.indexOf(String(cat(r, ri))), b = C.indexOf(String(cat(r, cj))); if (a < 0 || b < 0) return;
@@ -205,7 +211,7 @@ export function buildG(spec, table) {
     const ti = ci(spec.time), ei = ci(spec.event), gi = ci(spec.group);
     // events must be coded 0 (censored) or 1 (event): any other code is refused, never read as an event (v0.6.3)
     // missing = blank or a missing marker (typed as null); any other text ("event") is an invalid code, not missing
-    const badEv = []; rows.forEach((r, k) => { const raw = cat(r, ei); if (raw == null || String(raw).trim() === '') return; const e = num(r[ei]); if (e !== 0 && e !== 1) badEv.push(`row ${k + 1}: ${raw}`); });
+    const badEv = []; rows.forEach((r, k) => { const raw = cat(r, ei); if (raw == null || String(raw).trim() === '') return; const e = num(r[ei]); if (e !== 0 && e !== 1) badEv.push(`row ${dataRowNumber(k)}: ${raw}`); });
     if (badEv.length) throw new Error(`"${cols[ei]}" must be 1 (event) or 0 (censored); found ${badEv.slice(0, 5).join('; ')}${badEv.length > 5 ? ` and ${badEv.length - 5} more` : ''}. Recode the column first.`);
     const keep = rows.filter(r => num(r[ti]) != null && num(r[ei]) != null && cat(r, gi) != null);
     if (keep.length < rows.length) notes.push(`${rows.length - keep.length} row(s) with a missing time, event or group were left out.`);

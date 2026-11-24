@@ -194,6 +194,16 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   });
   ok(/row 3/.test(ev || '') && /event/.test(ev || ''), 'a text event code ("event") is refused as invalid, naming the row ' + ev);
 
+  const filteredRows = await page.evaluate(async () => {
+    const { buildG } = await import('./js/thistle.js');
+    const table = { columns: ['G', 'T', 'E'], rows: [['A', 4, 1], ['B', 5, 0], ['B', 6, -1]] };
+    return ['survival', 'counts'].map(layout => {
+      const spec = { layout, time: 'T', event: 'E', group: 'G', rows: 'G', cols: 'T', count: 'E', filter: { G: 'B' } };
+      try { buildG(spec, table); return ''; } catch (e) { return e.message; }
+    });
+  });
+  for (const msg of filteredRows) ok(/row 3\b/.test(msg), 'filtered error identifies the original data row ' + msg);
+
   // tab icon: the embedded Thistle Plot frame carries no icon links, Notebook keeps its own icon and title (Orion showed
   // Plot's icon on Notebook's tab), and Notebook sets its title again after an embedded app loads
   const icon = await page.evaluate(async () => {
