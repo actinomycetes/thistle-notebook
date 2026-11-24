@@ -271,7 +271,12 @@ export class ThistleApp {
       await sleep(150);
     }
     const w = this.frame.contentWindow;
-    if (!w.__tnHooked) { w.__tnHooked = true; w.alert = msg => { this.alerts.push(String(msg)); }; }
+    if (!w.__tnHooked) {
+      w.__tnHooked = true; w.alert = msg => { this.alerts.push(String(msg)); };
+      // a freshly loaded app page: set Notebook's own title again so the tab keeps Notebook's icon (v0.6.5: Orion showed
+      // the embedded Thistle Plot's icon on Notebook's tab; Plot ≥ 0.19.1 and Flow ≥ 0.23.1 also drop their icons inside a frame)
+      document.title = document.title; this._retitled = (this._retitled || 0) + 1;
+    }
     return w;
   }
 }

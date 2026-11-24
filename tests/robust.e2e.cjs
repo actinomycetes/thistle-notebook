@@ -194,6 +194,15 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   });
   ok(/row 3/.test(ev || '') && /event/.test(ev || ''), 'a text event code ("event") is refused as invalid, naming the row ' + ev);
 
+  // tab icon: the embedded Thistle Plot frame carries no icon links, Notebook keeps its own icon and title (Orion showed
+  // Plot's icon on Notebook's tab), and Notebook sets its title again after an embedded app loads
+  const icon = await page.evaluate(async () => {
+    const S = window.thistleNotebook, w = await S.tp.ready(), q = d => d.querySelectorAll('link[rel="icon"],link[rel="apple-touch-icon"]').length;
+    return { frame: q(w.document), top: q(document), title: document.title, retitles: S.tp._retitled > 0 };
+  });
+  ok(icon.frame === 0, 'the embedded Thistle Plot frame has no tab icon links (Thistle Plot ≥ 0.19.1) ' + JSON.stringify(icon));
+  ok(icon.top >= 1 && /^Thistle Notebook v/.test(icon.title) && icon.retitles, 'Notebook keeps its own icon and sets its title again after the frame loads ' + JSON.stringify(icon));
+
   // [P2] a dataset too large to keep in the notebook becomes usable after relinking its original (this session only)
   const big = await page.evaluate(async () => {
     const S = window.thistleNotebook, db = await import('./js/store.js'), { parseFile } = await import('./js/ingest.js');

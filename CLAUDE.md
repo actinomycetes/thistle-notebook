@@ -34,7 +34,9 @@ GitHub Pages serves `index.html` + `js/` + `css/`. LLM calls go to the Universit
   can be added as sources instead.
 - Favicon written as `<link rel="icon" href="data:image/svg+xml,...">` with every character escaped, no `type`
   attribute (Safari/iPad), and `document.title` set again from script in `js/app.js` (Orion 1.1 showed the icon only then,
-  as in Thistle Flow; v0.5.1). iPad: drop `accept` on file inputs (`IS_IOS`).
+  as in Thistle Flow; v0.5.1). `ThistleApp.ensure` sets the title again whenever an embedded app page loads, and TP ≥ 0.19.1 /
+  TF ≥ 0.23.1 remove their icon links inside a frame (Orion showed TP's icon on Notebook's tab; v0.6.5). iPad: drop
+  `accept` on file inputs (`IS_IOS`).
 
 ## Architecture map
 - `js/elm.js` ELM client (`classify` model metadata, streaming SSE chat, embeddings, web search over several routes
