@@ -298,6 +298,8 @@ async function finishSource(s, r, { replace = false } = {}) {
   s.status = 'ready'; delete s.progress;
   if (replace) await db.replaceSource(s, chunks); // all or nothing
   else { await db.putMany('chunks', chunks); await db.put('sources', s); }
+  if (!s.tables && r.sessionTables) S.tableCache.set(s.id, r.sessionTables);
+  else S.tableCache.delete(s.id);
   S.chunkCache.set(s.id, chunks); await db.touch(S.nb); renderSources();
 }
 const fileInfo = f => ({ name: f.name, size: f.size, lastModified: f.lastModified, path: f.webkitRelativePath || '' });
@@ -363,7 +365,7 @@ const changedOnDisk = (s, f) => !!(s.file && f && (s.file.sha256 && f._sha256 ? 
 async function linkFile(s, file) {
   if (s.file?.sha256 && file._sha256 === undefined) file._sha256 = file.size === s.file.size ? await fileHash(file) : 'size-differs';
   S.files.set(s.id, file);
-  if (s.kind === 'dataset' && !s.tables && !S.tableCache.has(s.id)) {
+  if (s.kind === 'dataset' && !s.tables && !S.tableCache.has(s.id) && !changedOnDisk(s, file)) {
     try { const r = await parseFile(file, parseCtx(s)); const t = r.tables || r.sessionTables; if (t) S.tableCache.set(s.id, t); } catch (e) { toast(`Could not read the table in ${file.name}: ${e.message}`, true); }
   }
   renderSources();
@@ -379,7 +381,7 @@ async function rereadSource(s) {
     const ns = { ...s, file: { ...fileInfo(file), sha256: await fileHash(file) } }; delete ns.error;
     await finishSource(ns, { ...r, role: s.role }, { replace: true });
     for (const k of Object.keys(s)) if (!(k in ns)) delete s[k];
-    Object.assign(s, ns); S.tableCache.delete(s.id); renderSources(); toast(`Re-read “${s.name}”`);
+    Object.assign(s, ns); file._sha256 = ns.file.sha256; renderSources(); toast(`Re-read “${s.name}”`);
   } catch (e) { s.status = before; delete s.progress; renderSources(); toast(`Could not re-read “${s.name}”: ${e.message}. The previous version is kept.`, true, 6000); }
 }
 function openOriginal(s) {
