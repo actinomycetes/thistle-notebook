@@ -2,13 +2,16 @@
 import { zip } from './zip.js';
 import { esc } from './util.js';
 
-export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, tableTools } = {}) {
+export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, labSlot, tableTools } = {}) {
   let src = String(text || '');
   // reasoning traces from some models
   src = src.replace(/<think>([\s\S]*?)(<\/think>|$)/g, (_, t) => `\n<details class="think"><summary>Model reasoning</summary>\n\n${t.trim()}\n\n</details>\n`);
   // analysis requests become cards
   let k = 0;
   src = src.replace(/```thistle-plot\s*\n[\s\S]*?(```|$)/g, () => `\n<div class="tp-slot" data-k="${k++}"></div>\n`);
+  // lab note updates become cards too (Accept / Edit / Reject); while streaming, an unfinished block shows as a placeholder
+  let j = 0;
+  src = src.replace(/```lab-note\s*\n[\s\S]*?(```|$)/g, (all, end) => end ? `\n<div class="lab-slot" data-k="${j++}"></div>\n` : '\n<div class="lab-slot pending">📓 writing a lab note update…</div>\n');
   const html = window.DOMPurify.sanitize(window.marked.parse(src, { gfm: true, breaks: false }), { ADD_TAGS: ['details', 'summary'] });
   const el = document.createElement('div'); el.className = 'md'; el.innerHTML = html;
   el.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; });
@@ -45,6 +48,7 @@ export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, t
   // Must run before analysis cards are inserted: Thistle Plot result tables are not part of the Markdown
   if (tableTools) el.querySelectorAll('table').forEach((t, i) => { if (!t.closest('details.think')) t.after(tableTools(i)); });
   if (cardSlot) el.querySelectorAll('.tp-slot').forEach(s => cardSlot(+s.dataset.k, s));
+  if (labSlot) el.querySelectorAll('.lab-slot:not(.pending)').forEach(s => labSlot(+s.dataset.k, s));
   return el;
 }
 
@@ -99,7 +103,7 @@ function blocks(tokens, depth = 0) {
 }
 
 export function markdownToDocx(md, title = '') {
-  const tokens = window.marked.lexer(String(md).replace(/```thistle-plot[\s\S]*?```/g, ''));
+  const tokens = window.marked.lexer(String(md).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, ''));
   // Wide tables (more than 5 columns) get landscape pages
   const wide = tokens.some(function f(t) { return (t.type === 'table' && t.header.length > 5) || (t.tokens || t.items || []).some(f); });
   PAGE_W = wide ? 14570 : 9638;

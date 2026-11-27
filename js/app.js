@@ -10,6 +10,10 @@ import { SEARCH_DBS, parseSuggestions, recentSince } from './search.js';
 import { renderMarkdown, markdownToDocx } from './md.js';
 import { extractTables, tableToCsv, tableToTsv, tablesToXlsx, reportHtml, markdownToHtml } from './export.js';
 import { parseSpecs, findTable, buildG, tplotFile, ThistlePlot, ThistleFlow, defaultSuiteUrl } from './thistle.js';
+import { createLab } from './labui.js';
+import { SECTIONS as LAB_SECTIONS } from './labnote.js';
+import { labProtocol } from './prompts.js';
+import * as users from './users.js';
 // Set the title again from script (as Thistle Flow does): Orion 1.1 (WebKit) showed the favicon only on pages whose title
 // changed after loading; the static <title> alone gave the generic github.io icon (v0.5.1, checked with test pages).
 document.title = `Thistle Notebook v${APP_VERSION} (Beta)`;
@@ -22,19 +26,17 @@ const SETTINGS_DEFAULTS = {
   serviceTier: 'auto', fulltextBudget: 90000, retrievalChunks: 40, maxOutputTokens: 8000,
   tpUrl: '', tfUrl: '', autoRunRounds: 2,
   webSearchStatus: '', webSearchDetail: '', // '' = not tried, 'ok', 'unavailable' (set by a real search or ⚙ Test web search)
+  labAutoApply: false, // lab note updates from the chat: false = Accept / Edit / Reject each, true = applied automatically
+  wikiBase: 'https://www.wiki.ed.ac.uk', wikiSpace: '', // for links to wiki pages (protocols) in formatted-text copies
 };
+// ELM keys belong to users (js/users.js, v0.7); S.settings.apiKey is the current user's active key
 function loadSettings() {
   let s = {}; try { s = JSON.parse(localStorage.getItem('tn.settings') || '{}'); } catch { }
-  let key = ''; try { key = sessionStorage.getItem('tn.key') || localStorage.getItem('tn.key') || ''; } catch { }
-  return { ...SETTINGS_DEFAULTS, ...s, apiKey: key, rememberKey: (() => { try { return !!localStorage.getItem('tn.key'); } catch { return false; } })() };
+  return { ...SETTINGS_DEFAULTS, ...s };
 }
 function saveSettings(s) {
   const { apiKey, rememberKey, ...rest } = s;
-  try {
-    localStorage.setItem('tn.settings', JSON.stringify(rest));
-    sessionStorage.setItem('tn.key', apiKey || '');
-    if (rememberKey && apiKey) localStorage.setItem('tn.key', apiKey); else localStorage.removeItem('tn.key');
-  } catch { }
+  try { localStorage.setItem('tn.settings', JSON.stringify(rest)); } catch { }
 }
 
 const S = {
@@ -43,6 +45,43 @@ const S = {
   files: new Map(),      // source id → original File, for this browser session only (browsers cannot keep paths)
   tableCache: new Map(), // source id → tables re-read from a linked original (datasets too large to keep)
   histPos: -1,
+  users: null, lab: null,
+};
+S.users = users.loadUsers(); S.settings.apiKey = users.activeKeyValue(S.users);
+const userName = () => users.currentUser(S.users)?.name || '';
+// Every lab-note change is signed with the current user's name: ask once if it is not set
+async function author() {
+  let n = userName();
+  if (n) return n;
+  n = (prompt('Your name, as it should appear on every change you make to the lab note (Settings → Users can hold several people and their ELM keys):') || '').trim();
+  if (!n) { toast('A name is needed to sign lab note changes', true); return null; }
+  users.currentUser(S.users).name = n; users.saveUsers(S.users); renderUserBadge();
+  return n;
+}
+function renderUserBadge() {
+  const b = $('#btnUser'); if (!b) return;
+  const u = users.currentUser(S.users), k = users.activeKey(S.users);
+  b.textContent = `👤 ${u?.name || 'Who?'}`;
+  b.title = `${u?.name || 'No name set'}${k ? ` · ELM key “${k.label}” (…${k.last4})` : ' · no ELM key'} — click to switch user`;
+}
+function switchUser(id) {
+  S.users.current = id; users.saveUsers(S.users); S.settings.apiKey = users.activeKeyValue(S.users);
+  makeElm(); renderUserBadge(); loadModels(true);
+  toast(`Now writing as ${userName() || 'a user without a name'}`);
+}
+function userMenu(anchor) {
+  const pop = $('#popover'); pop.innerHTML = '';
+  pop.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, 'Who is using Thistle Notebook? (signs every lab note change)'),
+    ...S.users.users.map(u => h('button', { class: 'menu-item', onclick: () => { pop.hidden = true; if (u.id !== S.users.current) switchUser(u.id); } },
+      h('span', {}, `${u.id === S.users.current ? '● ' : '○ '}${u.name || '(no name)'}`), h('small', {}, `${u.keys.length} ELM key(s)`))),
+    h('button', { class: 'menu-item', onclick: () => { pop.hidden = true; settingsDialog(); } }, h('span', {}, '⚙ Manage users and ELM keys…'))));
+  pop.hidden = false; const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 10)) + 'px'; pop.style.top = (r.bottom + 4) + 'px';
+}
+const wikiUrl = title => {
+  if (!title) return null;
+  const m = /^([A-Z0-9~]+):(.+)$/.exec(title), space = m ? m[1] : S.settings.wikiSpace, page = m ? m[2] : title;
+  return space && S.settings.wikiBase ? `${S.settings.wikiBase.replace(/\/+$/, '')}/display/${encodeURIComponent(space)}/${encodeURIComponent(page).replace(/%20/g, '+')}` : null;
 };
 const makeElm = () => (S.elm = new ELM({ apiKey: S.settings.apiKey, baseUrl: S.settings.baseUrl, serviceTier: S.settings.serviceTier }));
 
@@ -150,6 +189,7 @@ async function openNotebook(id) {
   await ensureTabs();
   $('#modeSelect').value = S.nb.mode || 'general'; $('#toneSelect').value = S.nb.tone || 'scientist';
   await renderNbSelect(); renderPrivacy(); renderSources(); renderNotes(); renderChat();
+  await S.lab?.load();
 }
 function newNotebookDialog() {
   const name = h('input', { type: 'text', value: 'Untitled notebook' }), oc = h('input', { type: 'checkbox' });
@@ -511,16 +551,38 @@ function messageEl(m) {
   if (meta.web?.citations?.length) bubble.append(h('details', { class: 'web-list' }, h('summary', {}, `🌐 Web findings (${meta.web.citations.length} sources, via ${meta.web.model})`),
     h('ol', {}, meta.web.citations.map(c => h('li', {}, h('a', { href: c.url, target: '_blank', rel: 'noopener noreferrer' }, c.title))))));
   const doc = { title: firstLine(m.content), content: m.content, cites: meta.cites || {}, web: meta.web };
-  bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)), tableTools: tableTools(doc) }));
+  bubble.append(renderMarkdown(m.content, { cites: meta.cites || {}, web: meta.web?.citations || [], onCite: (n, c, e) => showCite(c, e), cardSlot: (k, slot) => slot.replaceWith(tpCard(m, k)), labSlot: (k, slot) => slot.replaceWith(S.lab.card(m, k)), tableTools: tableTools(doc) }));
   if (meta.webNote && !meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, `🌐 No web search for this answer: ${meta.webNote}. It is based on your sources and the model's own knowledge, which may be out of date. `,
     h('button', { class: 'btn small', onclick: () => suggestSearches(m) }, '🔎 Suggest searches I can run')));
   if (meta.webError) bubble.prepend(h('div', { class: 'warn-box' }, '🌐 Web search did not run, so this answer uses only your sources and the model\'s own knowledge. ', h('details', {}, h('summary', {}, 'Why'), meta.webError)));
   if (meta.error) bubble.append(h('div', { class: 'err-box' }, meta.error));
   wrap.append(who, bubble, h('div', { class: 'msg-actions' },
     questionOf(m) ? h('button', { class: 'btn', title: 'Ask the same question again (new answer below; this one is kept)', onclick: () => rerun(questionOf(m)) }, '↻ Regenerate') : null,
-    h('button', { class: 'btn', onclick: () => saveNote(m.content.replace(/```thistle-plot[\s\S]*?```/g, ''), firstLine(m.content), meta.cites, meta.web) }, '🗒 Save as note'),
-    h('button', { class: 'btn export-btn', title: 'Word, Excel, CSV, Markdown, HTML or PDF', onclick: e => exportMenu(e.currentTarget, doc) }, '⤓ Export ▾')));
+    h('button', { class: 'btn', onclick: () => saveNote(m.content.replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, ''), firstLine(m.content), meta.cites, meta.web) }, '🗒 Save as note'),
+    h('button', { class: 'btn export-btn', title: 'Word, Excel, CSV, Markdown, HTML or PDF', onclick: e => exportMenu(e.currentTarget, doc) }, '⤓ Export ▾'),
+    h('button', { class: 'btn lab-add-btn', title: 'Add this answer to a section of the current lab note entry', onclick: e => labAddMenu(e.currentTarget, () => plainAnswer(m), `answer from chat (${meta.model || 'assistant'}, ${new Date(m.t).toLocaleString()})`) }, '📓 Add to lab note ▾')));
   return wrap;
+}
+// An answer as plain Markdown for the lab note: no machine blocks, citations written out as (source, location)
+function plainAnswer(m) {
+  const c = m.meta?.cites || {};
+  return String(m.content).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
+    .replace(/\[((?:\d+)(?:\s*[,;–-]\s*\d+)*)\]/g, (all, g) => { const ns = g.match(/\d+/g).map(Number).filter(n => c[n]); return ns.length ? `(${ns.map(n => `${c[n].source}, ${c[n].loc}`).join('; ')})` : all; })
+    .trim();
+}
+function labAddMenu(anchor, getMd, note, { attach } = {}) {
+  const e = S.lab.activeEntry(), pop = $('#popover'); pop.innerHTML = '';
+  if (!e) { toast('Create an assay entry first (＋ New assay in the Lab note pane)', true); showRightTab('lab'); return; }
+  pop.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, 'Add to which section of the current entry?'),
+    ...S.lab.sections().map(k => h('button', { class: 'menu-item', onclick: async () => {
+      pop.hidden = true;
+      let md = getMd();
+      if (attach) { const f = attach(), [name] = await S.lab.addAttachments(e, [f], { quiet: true }); if (name) md += `\n\n![${f.caption || name}](attachment:${name})`; }
+      if (await S.lab.addToSection(k, md, `added ${note}`)) showRightTab('lab');
+    } }, h('span', {}, LAB_SECTIONS[k].label)))));
+  pop.hidden = false; const r = anchor.getBoundingClientRect();
+  pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 10)) + 'px';
+  pop.style.top = (r.bottom + 4 + pop.offsetHeight > innerHeight ? Math.max(8, r.top - pop.offsetHeight - 4) : r.bottom + 4) + 'px';
 }
 // ---------- chat housekeeping: delete, re-run, copy to box, trace sources ----------
 function questionOf(a) { // the user question an answer belongs to
@@ -609,7 +671,7 @@ async function send(text, extra = {}) {
 
 async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
   const model = currentModel();
-  const a = { id: uid(), nb: S.nb.id, role: 'assistant', content: '', t: Date.now(), meta: { model, studio } };
+  const a = { id: uid(), nb: S.nb.id, role: 'assistant', content: '', t: Date.now(), meta: { model, studio, labEntry: S.lab?.activeEntry()?.id || null } };
   const el = h('div', { class: 'msg assistant' }, h('div', { class: 'who' }, `${model.includes('/') ? '🏛' : '☁'} ${model} · preparing…`), h('div', { class: 'bubble' }, h('div', { class: 'md streaming' })));
   $('#chatLog').append(el); el.scrollIntoView({ block: 'end' });
   setBusy(true);
@@ -638,6 +700,7 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
     const sys = systemPrompt({ mode: mode || $('#modeSelect').value, tone: tone ?? $('#toneSelect').value, hasSources: !!sources.length, ctxMode,
       webEnabled: !!web, webNote: a.meta.webNote || (a.meta.webError ? 'the search was refused by ELM' : ''), datasets, today: new Date().toDateString() })
       + (context ? `\n\n# SOURCES\n${context}` : '')
+      + ((mode || $('#modeSelect').value) === 'labnote' ? '\n' + labProtocol({ ...S.lab.promptContext(), now: new Date().toLocaleString('en-GB'), author: userName() }) : '')
       + (S.messages[S.messages.length - 1]?.role === 'results' ? `\n\n# NOW\n${RESULT_NUDGE}` : '')
       + (web ? `\n\n# WEB FINDINGS (via ${web.model})\n${web.text}\n\nWeb sources: ${web.citations.map((c, i) => `[W${i + 1}] ${c.title} <${c.url}>`).join('\n')}` : '');
     const msgs = [{ role: 'system', content: sys }, ...historyFor(S.messages.length)];
@@ -662,6 +725,7 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
   try { S.messages.push(a); await db.put('messages', a); await db.touch(S.nb); el.replaceWith(messageEl(a)); }
   finally { setBusy(false); }
   refreshCosts();
+  if (!a.meta.error) await S.lab.autoApply(a);
   // Analyses requested by the model → run in Thistle Plot, then hand results back (bounded rounds)
   const specs = parseSpecs(a.content).filter(s => s.ok);
   if (specs.length && $('#autoRunToggle').checked && depth < +S.settings.autoRunRounds && !a.meta.error) await runAllAndInterpret(a, depth);
@@ -681,7 +745,7 @@ async function suggestSearches(forMsg = null) {
   const question = typed || lastUser?.content || '';
   if (!question) return toast('Type a question first (or ask one in the chat)', true);
   const titles = enabledSources().map(s => s.name).slice(0, 40).join('; ');
-  const user = `Question: ${question}\n\n` + (lastAns && !typed ? `Current answer to check or update (excerpt):\n${lastAns.content.replace(/```thistle-plot[\s\S]*?```/g, '').slice(0, 3000)}\n\n` : '') +
+  const user = `Question: ${question}\n\n` + (lastAns && !typed ? `Current answer to check or update (excerpt):\n${lastAns.content.replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').slice(0, 3000)}\n\n` : '') +
     (titles ? `The user already has these sources: ${titles}\n` : '') + `Year now: ${new Date().getFullYear()}.`;
   setBusy(true);
   const note = h('div', { class: 'msg searches' }, h('div', { class: 'who' }, `🔎 ${model} · writing searches…`));
@@ -774,6 +838,10 @@ function tpCard(m, k) {
     btns.append(h('button', { class: 'btn small', title: ranG ? 'Thistle Plot project with the table and result of this run' : 'Thistle Plot project with this table (not run yet)', onclick: () => saveText(tplotFile(tableG, withResult, withResult?.plot, withResult?.appVersion), `${safeName(spec.title || spec.test)}.tplot`, 'application/json') }, '⤓ .tplot'),
       h('button', { class: 'btn small', title: 'Show Thistle Plot with this table loaded', onclick: async () => { try { await S.tp.show(tableG); openDrawer('tp'); } catch (e) { toast(e.message, true); } } }, '👁 Open in Thistle Plot'));
     if (res?.status === 'ok' && !m.meta.interpreted) btns.append(h('button', { class: 'btn small', onclick: () => sendResults(m, 0, true) }, '💬 Interpret results'));
+    if (okRun) btns.append(h('button', { class: 'btn small lab-add-btn', title: 'Add this result (and its figure) to the lab note', onclick: ev => labAddMenu(ev.currentTarget,
+      () => `**${spec.title || okRun.title}** — ${testName}, Thistle Plot v${okRun.appVersion || '?'} (run ${when(okRun.at)})\n\n${okRun.text.trim()}`,
+      `Thistle Plot result (${testName})`,
+      okRun.plot ? { attach: () => { const blob = dataUrlBlob(okRun.plot.image); return { blob, name: `${safeName(spec.title || okRun.title)}.png`, type: 'image/png', caption: spec.title || okRun.title }; } } : {}) }, '📓 Add to lab note ▾'));
   }
   card.append(btns);
   if (res?.status === 'err') card.append(h('div', { class: 'err-box' }, `The latest run failed (${when(res.at)}): ${res.error}`));
@@ -787,6 +855,11 @@ function tpCard(m, k) {
     card.append(box);
   }
   return card;
+}
+function dataUrlBlob(u) {
+  const [head, b64] = String(u).split(','), type = (/data:([^;]+)/.exec(head) || [])[1] || 'application/octet-stream';
+  const bin = atob(b64 || ''), b = new Uint8Array(bin.length); for (let i = 0; i < bin.length; i++) b[i] = bin.charCodeAt(i);
+  return new Blob([b], { type });
 }
 function describeSpec(s) {
   const j = v => [].concat(v).join(' × ');
@@ -938,7 +1011,7 @@ function viewNote(n) {
 // Exported reports keep their citations readable outside the app: [n] → list of sources + locations
 const citedNumbers = content => [...new Set([...String(content).matchAll(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g)].flatMap(m => m[1].match(/\d+/g).map(Number)))].sort((a, b) => a - b);
 function withRefs(d) {
-  const c = d.cites || {}, content = String(d.content).replace(/```thistle-plot[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
+  const c = d.cites || {}, content = String(d.content).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
   const refs = citedNumbers(content).filter(i => c[i]).map(i => `[${i}] ${c[i].source}, ${c[i].loc}`);
   const web = (d.web?.citations || []).map((w, i) => `[W${i + 1}] ${w.title} — ${w.url}`);
   return content + (refs.length || web.length ? `\n\n---\n**Sources cited**\n\n${[...refs, ...web].map(r => '- ' + r).join('\n')}\n` : '');
@@ -994,6 +1067,14 @@ function exportMenu(anchor, d) {
   p.style.top = (r.bottom + 6 + p.offsetHeight > innerHeight ? Math.max(8, r.top - p.offsetHeight - 6) : r.bottom + 6) + 'px';
 }
 
+// ---------------- right pane: Lab note | Studio & notes ----------------
+function showRightTab(tab) {
+  tab = tab === 'studio' ? 'studio' : 'lab';
+  $$('#rightTabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === tab));
+  $('#labPanel').hidden = tab !== 'lab'; $('#studioPanel').hidden = tab !== 'studio';
+  try { localStorage.setItem('tn.rightTab', tab); } catch { }
+}
+
 // ---------------- Thistle apps drawer ----------------
 function openDrawer(app = 'tp') {
   $('#suiteDrawer').classList.add('open'); $('#suiteDrawer').setAttribute('aria-hidden', 'false');
@@ -1044,12 +1125,11 @@ function settingsDialog() {
     const e = h('select', {}, h('option', { value: '' }, 'automatic'), S.models.filter(m => m.kind === kind && filter(m)).map(m => h('option', { value: m.id }, `${m.local ? '🏛' : '☁'} ${m.id}`)));
     e.value = s[key] || ''; return e;
   };
-  const remember = h('input', { type: 'checkbox', checked: s.rememberKey });
   const status = h('div', {});
   modal('Settings', h('div', {},
+    usersSection(),
+    h('h4', { class: 'settings-h' }, 'Models and options'),
     h('div', { class: 'form-grid' },
-      ...field('apiKey', 'ELM API key', txt('apiKey', 'password', 'elm-xxxxxxxx-xxxxxxxxxxxxxxxx')),
-      h('span'), h('label', { class: 'check-row' }, remember, 'Remember on this device (otherwise forgotten when the tab closes)'),
       ...field('baseUrl', 'ELM API address', txt('baseUrl', 'url')),
       ...field('chatModel', 'Default chat model', modelSel('chatModel', 'chat')),
       ...field('embeddingModel', 'Embedding model (search)', modelSel('embeddingModel', 'embedding'), 'Used to find relevant passages in long sources'),
@@ -1063,8 +1143,10 @@ function settingsDialog() {
       ...field('autoRunRounds', 'Thistle Plot auto-run rounds', txt('autoRunRounds', 'number'), 'How many times the assistant may request analyses and get results back automatically'),
       ...field('tpUrl', 'Thistle Plot address', txt('tpUrl', 'url', defaultSuiteUrl('thistle-plot'))),
       ...field('tfUrl', 'Thistle Flow address', txt('tfUrl', 'url', defaultSuiteUrl('thistle-flow'))),
+      ...field('wikiBase', 'Wiki address', txt('wikiBase', 'url', 'https://www.wiki.ed.ac.uk'), 'Used to link wiki pages (e.g. protocols) in formatted-text copies of lab note entries'),
+      ...field('wikiSpace', 'Wiki space key', txt('wikiSpace', 'text', 'e.g. WIKB'), 'The space of your Wikibench lab book; links to pages in it are made from their titles'),
     ),
-    h('div', { class: 'hint-box' }, 'Your key is kept only in this browser. Request one on ELM (API keys → New Key Request). ELM asks API users to try lower-cost models first and to use flex where possible.'),
+    h('div', { class: 'hint-box' }, 'Keys are kept only in this browser. Request one on ELM (API keys → New Key Request); keys are renewed yearly, so add the new one and keep or remove the old. ELM asks API users to try lower-cost models first and to use flex where possible.'),
     status,
     h('div', { class: 'modal-foot' },
       h('button', { class: 'btn', title: 'Tries each way ELM might offer web search, with one short query (costs a few pence at most)', onclick: () => { apply(); testWebSearch(status); } }, '🌐 Test web search'),
@@ -1072,10 +1154,44 @@ function settingsDialog() {
       h('button', { class: 'btn primary', onclick: () => { apply(); closeModal(); loadModels(true); } }, 'Save'))));
   function apply() {
     for (const [k, e] of Object.entries(f)) s[k] = e.type === 'number' ? +e.value : e.value.trim();
-    s.rememberKey = remember.checked; saveSettings(s); makeElm();
+    s.apiKey = users.activeKeyValue(S.users); saveSettings(s); makeElm(); renderUserBadge();
     S.tp = new ThistlePlot(s.tpUrl || defaultSuiteUrl('thistle-plot'), $('#tpHost')); S.tf = new ThistleFlow(s.tfUrl || defaultSuiteUrl('thistle-flow'), $('#tfHost'));
     $('#tpHost').innerHTML = ''; $('#tfHost').innerHTML = '';
   }
+}
+
+// Users and their ELM keys (a person can hold several keys: they are renewed every year). Names sign lab note changes.
+function usersSection() {
+  const box = h('div', { class: 'users-box' });
+  const keyChanged = () => { S.settings.apiKey = users.activeKeyValue(S.users); users.saveUsers(S.users); makeElm(); renderUserBadge(); };
+  const draw = () => {
+    const st = S.users, u = users.currentUser(st);
+    const label = h('input', { type: 'text', placeholder: `ELM key ${new Date().getFullYear()}` }), value = h('input', { type: 'password', placeholder: 'elm-xxxxxxxx-xxxxxxxxxxxxxxxx', autocomplete: 'off' });
+    const rem = h('input', { type: 'checkbox' });
+    box.replaceChildren(
+      h('h4', { class: 'settings-h' }, 'Users and ELM keys'),
+      h('div', { class: 'form-grid' },
+        h('label', {}, 'User'), h('div', { class: 'row-inline' },
+          h('select', { id: 'userSelect', onchange: ev => { st.current = ev.target.value; keyChanged(); draw(); } }, st.users.map(x => h('option', { value: x.id, selected: x.id === st.current }, x.name || '(no name)'))),
+          h('button', { class: 'btn small', onclick: () => { const n = prompt('Name of the new user'); if (n && n.trim()) { users.addUser(st, n); keyChanged(); draw(); } } }, '＋ New user'),
+          st.users.length > 1 ? h('button', { class: 'btn small danger', onclick: () => { if (confirm(`Remove ${u.name || 'this user'} and their keys from this browser? Their name stays on the changes they made.`)) { users.removeUser(st, u.id); keyChanged(); draw(); } } }, 'Remove user') : null),
+        h('label', {}, 'Name'), h('input', { type: 'text', id: 'userName', value: u.name, placeholder: 'Your name, as it appears on every lab note change', onchange: ev => { u.name = ev.target.value.trim(); users.saveUsers(st); renderUserBadge(); draw(); } })),
+      u.keys.length ? h('table', { class: 'diag keys-table' }, h('tr', {}, h('th', {}, 'Use'), h('th', {}, 'Key'), h('th', {}, 'Added'), h('th', {}, 'Remember on this device'), h('th', {})),
+        u.keys.map(k => h('tr', {},
+          h('td', {}, h('input', { type: 'radio', name: 'activeKey', checked: k.id === (users.activeKey(st)?.id), onchange: () => { u.activeKey = k.id; keyChanged(); draw(); } })),
+          h('td', {}, `${k.label} (…${k.last4})${users.keyValue(k) ? '' : ' — not available in this tab: add it again or tick Remember next time'}`),
+          h('td', {}, new Date(k.added).toLocaleDateString()),
+          h('td', {}, h('input', { type: 'checkbox', checked: k.remember, title: 'Off: the key is forgotten when this tab closes', onchange: ev => { users.setRemember(st, u.id, k.id, ev.target.checked); keyChanged(); } })),
+          h('td', {}, h('button', { class: 'icon', title: 'Remove this key', onclick: () => { if (confirm(`Remove the key “${k.label}”?`)) { users.removeKey(st, u.id, k.id); keyChanged(); draw(); } } }, '🗑'))))) : h('p', { class: 'hint' }, 'No ELM key yet for this user.'),
+      h('div', { class: 'row-inline add-key' }, label, value, h('label', { class: 'check-row' }, rem, 'Remember'),
+        h('button', { class: 'btn small primary', id: 'btnAddKey', onclick: () => {
+          const v = value.value.trim(); if (!v) { value.focus(); return; }
+          users.addKey(st, u.id, { label: label.value, value: v, remember: rem.checked }); keyChanged(); draw(); toast('Key added and in use');
+        } }, '＋ Add key')),
+      h('p', { class: 'hint' }, 'Names only label who made each change (anyone using this browser can switch users); they are not a login.'));
+  };
+  draw();
+  return box;
 }
 
 const ELM_INFO = 'https://information-services.ed.ac.uk/computing/comms-and-collab/elm';
@@ -1095,7 +1211,7 @@ async function testWebSearch(box) {
   box.innerHTML = '';
   box.append(h('div', { class: ok ? 'hint-box' : 'warn-box' },
     h('b', {}, ok ? `Web search works with your key (${ok.name}, ${ok.model}).` : 'Web search is not available through ELM with your key. The 🌐 Web search option is now switched off; everything else works as before.'),
-    h('table', { class: 'diag' }, h('tr', {}, h('th', {}, 'Route'), h('th', {}, 'Model'), h('th', {}, 'Result')),
+    h('table', { class: 'diag web-diag' }, h('tr', {}, h('th', {}, 'Route'), h('th', {}, 'Model'), h('th', {}, 'Result')),
       rows.map(r => h('tr', {}, h('td', {}, r.name), h('td', {}, r.model), h('td', {}, r.msg)))),
     ok ? null : h('div', {}, rows.some(r => /refused this request/.test(r.msg))
       ? h('div', {}, '“ELM refused this request” means ELM answered with an error that browsers are not allowed to read (ELM\'s error replies have no CORS header). To see ELM\'s actual reason, run this in Terminal on your own computer. It works in Terminal on a Mac (zsh) and in bash, asks for your key without showing it, and the key stays on your computer:',
@@ -1127,6 +1243,14 @@ PDF (scanned pages are read by a vision model), Word, PowerPoint, Excel/CSV, tex
 - **Marking**: rubric + question + submissions → per-criterion suggested marks with quoted evidence, consistency checks, feedback drafts. Studio marks each submission separately.
 - **Data analysis**: design, quality problems, appropriate tests, next experiments.
 - **Scientific writing**: abstracts, lay summaries, introductions, discussions, rewrites — choose the **Audience** (lay public, scientists, field experts).
+
+### Lab notebook (📓 Lab note pane)
+- One notebook = one **Study**; each **assay entry** = one Wikibench assay page (＋ New assay; pick entries from the menu). Wet, dry or hybrid entries start with suitable sections.
+- **Edit** a section with ✎ (Markdown). Link a wiki page as \`[name](wiki:Page title)\`; attach files below the sections and refer to them as \`![caption](attachment:file.png)\`.
+- **Chat**: choose the **Lab notebook** mode and describe what you did. Proposed text appears as cards: **Accept / Edit / Reject**, or set *Chat updates* to apply automatically. Answers and Thistle Plot results: **📓 Add to lab note**.
+- **Nothing is removed**: every change is a version signed with your name and time (🕘 versions, ⋯ → Change log). Deleted entries and attachments are kept and can be restored.
+- **👤** shows who is writing; **⚙ Settings → Users and ELM keys** holds each person's name and their keys (keys are renewed yearly).
+- **📋 Copy for wiki…**: Create assay on the Study page → ＋ → Markup → Confluence wiki → paste → drag the attachments onto the page.
 
 ### Working in a notebook
 - **Source tabs**: keep several sets of sources in one notebook. Click a tab to show it; **tick** it to use its sources. Only sources in ticked tabs are used. 📁 under a source puts it in several tabs (e.g. one rubric for every group). Double-click a tab to rename it.
@@ -1177,6 +1301,17 @@ async function init() {
   S.tp = new ThistlePlot(S.settings.tpUrl || defaultSuiteUrl('thistle-plot'), $('#tpHost'));
   S.tf = new ThistleFlow(S.settings.tfUrl || defaultSuiteUrl('thistle-flow'), $('#tfHost'));
   renderStudio();
+  S.lab = createLab({
+    h, $, db, toast, modal, closeModal, uid, saveBlob, saveText, safeName, fmtBytes, pickFiles, author, wikiUrl,
+    nb: () => S.nb, touch: () => saveNb(),
+    autoApply: () => !!S.settings.labAutoApply, setAutoApply: v => { S.settings.labAutoApply = v; saveSettings(S.settings); },
+    saveMessage: m => db.put('messages', m),
+    rerenderMessage: m => { const old = $(`.msg[data-id="${m.id}"]`); if (old) old.replaceWith(messageEl(m)); },
+  });
+  let rt = 'lab'; try { rt = localStorage.getItem('tn.rightTab') || 'lab'; } catch { }
+  showRightTab(rt);
+  $$('#rightTabs button').forEach(b => (b.onclick = () => showRightTab(b.dataset.tab)));
+  renderUserBadge(); $('#btnUser').onclick = e => userMenu(e.currentTarget);
   let list = await db.listNotebooks();
   if (!list.length) list = [await db.createNotebook('My first notebook')];
   const last = localStorage.getItem('tn.lastNb');
@@ -1219,7 +1354,7 @@ async function init() {
   $('#btnTheme').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; localStorage.setItem('tn.theme', t); $('#btnTheme').textContent = t === 'dark' ? '🌙' : '☀️'; };
   $('#modalClose').onclick = closeModal;
   $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
-  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn,#btnHistory,.tabs-btn')) $('#popover').hidden = true; });
+  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn,#btnHistory,.tabs-btn,#btnUser,.lab-add-btn,.lab-menu-btn,.lab-edit-tools')) $('#popover').hidden = true; });
   document.addEventListener('keydown', e => {
     if (e.key === 'F1' || ((e.metaKey || e.ctrlKey) && e.key === '/')) { e.preventDefault(); helpDialog(); }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTnote(); }

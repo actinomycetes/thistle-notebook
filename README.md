@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.6.6). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.7.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -48,6 +48,46 @@ The app's **❓ Help** links to all of these:
 3. **＋ Add sources**, set each source's **role** (Paper, Dataset, Rubric, Question, Answer/submission, My draft…), and
    tick the sources to use.
 4. Pick a **Mode** and **Audience**, then ask, or use a **Studio** report.
+
+## Lab notebook (ELN) and Wikibench
+Thistle Notebook can write your electronic lab notebook as you work, in the shape of the University's
+[Wikibench](https://library.ed.ac.uk/research-support/research-data-service/during/open-research-tools/wikibench)
+Confluence template (ISA: Investigation → Study → Assay).
+
+- **📓 Lab note pane** (right). One notebook is one **Study** (title, investigation, purpose, description). Each
+  **assay entry** becomes one Wikibench assay page, titled `YYYY-MM-DD Assay title`; pick entries from the menu and
+  add them with ＋ New assay.
+- **Entry types.** Wet, dry (computational) or hybrid. The type only sets the starting sections:
+  - **Wet:** aim, materials, protocol, procedure log, results, analysis, conclusions.
+  - **Dry:** data inputs and software/code/parameters instead of materials and protocol.
+  - **Hybrid:** both sets.
+- **Edit directly.** Each section is Markdown (✎, Ctrl/⌘+Enter saves). Refer to a wiki page (e.g. a protocol) as
+  `[name](wiki:Exact page title)`; attach files under the sections and refer to them as
+  `[label](attachment:file.csv)` or `![caption](attachment:image.png)`.
+- **Or say it in the chat.** Choose the **Lab notebook** mode and describe what you did in your own words. The
+  assistant proposes formal notebook text for the right section, with your numbers and units unchanged and `[check: …]`
+  where something is missing. Under **Chat updates**:
+  - **Ask me:** each proposal has **Accept / Edit / Reject**.
+  - **Apply automatically:** proposals go straight in, labelled as such.
+- **Adding chat material.** Chat answers and Thistle Plot results (with their figure as an attachment) can be added to
+  any section with **📓 Add to lab note**.
+- **Nothing is ever removed.** Every change is a new version, with time, author and how it was made (edited, from chat,
+  restored).
+  - **🕘** on a section lists its versions; restoring adds the old text as a new version.
+  - Deleting an entry or an attachment is recorded as an event: it is hidden, kept, and can be restored.
+  - **⋯ → Change log** lists every change, with a CSV export.
+- **Users and keys.** Settings → Users and ELM keys: each person has a name (which signs their changes) and one or
+  more ELM keys (keys are renewed yearly; the active one is used). Switch user with 👤 in the header. Names record
+  authorship; they are not a login.
+- **📋 Copy for wiki…** guides you through it:
+  1. Click **Create assay** on your Study page and paste the title.
+  2. Click **＋ → Markup → Confluence wiki** and paste the markup. It contains headings, tables, links to protocol
+     pages, images and links to attachments, and the **attachments macro** at the bottom.
+  3. Drag the attachments onto the page (**⤓ Attachments** downloads them).
+
+  **Copy as formatted text** is the alternative: paste straight into the page body, without attachment links.
+  `examples/wikibench/` has a ready-made paste test of the Wikibench example assay.
+- **Saving.** Lab notes and attachments are saved in the `.tnote` file (format 3) with every version.
 
 ## Working in a notebook
 - **Source tabs.** Keep several sets of sources in one notebook, for example "Papers", "Marking: group A" and
@@ -148,11 +188,15 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   (with Thistle Plot ≥ 0.19.1 and Thistle Flow ≥ 0.23.1).
 - **v0.6.6:** switching notebooks quickly (or opening a .tnote while another notebook is loading) always ends on the one
   opened last, with its own sources and chat.
+- **v0.7.0:** lab notebook — 📓 Lab note pane (Study + assay entries; wet, dry or hybrid), Markdown sections with every
+  version kept (time, author, how), chat updates in the Lab notebook mode (Accept / Edit / Reject or automatic),
+  attachments, Add to lab note from answers and Thistle Plot results, users with several ELM keys, and Copy for wiki
+  (Confluence wiki markup with the attachments macro, or formatted text) for Wikibench. `.tnote` format 3.
 - **Thistle Flow**: in 🔬 Thistle apps → Thistle Flow, load FCS files and gate as usual, then **⬇ Add TF statistics as
   source**. The population statistics become a dataset the assistant can analyse and send on to Thistle Plot. `.tflow`
   files can also be added as sources (gating hierarchy and samples).
 - `.tplot` files can be added as sources (their data table and results).
-- Files follow the suite conventions: `.tnote`, with `{"app": "Thistle Notebook", "format": 2, "appVersion", "kind"}`
+- Files follow the suite conventions: `.tnote`, with `{"app": "Thistle Notebook", "format": 3, "appVersion", "kind"}`
   first. A Thistle Plot or Flow file opened by mistake gets a plain message.
 
 Running TP/TF inside the notebook needs them on the **same site**, e.g. all three on `actinomycetes.github.io`. This
@@ -180,7 +224,13 @@ exports (file structure checked),
 resizable panes and closing notebooks. `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.6.6
+## Known limitations of v0.7.0
+- The wiki export has not yet been tried on wiki.ed.ac.uk (see `examples/wikibench/README.md`). Nothing can be
+  published to the wiki directly: the wiki does not accept requests from browser apps hosted elsewhere, so the route is
+  copy and paste.
+- Attachments are stored inside `.tnote` files (base64), so large images make large files.
+- A stored protocol library (public / private protocols) is planned for v0.8; for now link to protocol pages with
+  `[name](wiki:Page title)`.
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional

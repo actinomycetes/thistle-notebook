@@ -1,0 +1,22 @@
+An assay to measure the effectiveness of several antibiotics on _Escherichia coli_ ATCC 25922.
+
+h3. Protocol
+
+Followed [Kirby-Bauer Disk Diffusion Susceptibility Test Protocol|Kirby-Bauer Disk Diffusion Susceptibility Test Protocol] with the exception that the lab [agar recipe|Agar recipe] was used.
+
+h3. Results
+
+||Label||Antibiotic||Zone size (mm)||
+|A|Kanamycin|39|
+|B|Netilmicin|17|
+|C|Streptomycin|40|
+|D|nil (control)|0|
+|E|Meropenem|0|
+|F|Cefalexin|13|
+|G|Teicoplanin|27|
+
+!antibiotic_plate_labelled.png|width=450!
+
+h3. Attachments
+
+{attachments}

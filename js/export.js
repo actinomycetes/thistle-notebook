@@ -17,7 +17,7 @@ function inlineText(tokens) {
 }
 /** All Markdown tables in document order: [{title, header: [..], rows: [[..]]}]. Title = nearest heading above. */
 export function extractTables(md) {
-  const tokens = window.marked.lexer(String(md || '').replace(/```thistle-plot[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, ''));
+  const tokens = window.marked.lexer(String(md || '').replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, ''));
   const out = []; let heading = '';
   const walk = list => list.forEach(t => {
     if (t.type === 'heading') heading = inlineText(t.tokens).trim();
@@ -99,5 +99,5 @@ pre{background:#f1f5f9;padding:8px;overflow-x:auto}blockquote{border-left:3px so
 <body><h1>${esc(title)}</h1>${bodyHtml}<div class="foot">Generated with Thistle Notebook (ELM). AI-generated content: check it against the sources.</div></body></html>`;
 }
 export function markdownToHtml(md) {
-  return window.DOMPurify.sanitize(window.marked.parse(String(md || '').replace(/```thistle-plot[\s\S]*?```/g, ''), { gfm: true }));
+  return window.DOMPurify.sanitize(window.marked.parse(String(md || '').replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, ''), { gfm: true }));
 }

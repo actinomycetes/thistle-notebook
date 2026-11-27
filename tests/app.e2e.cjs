@@ -62,7 +62,7 @@ function chatReply(body) {
     if (p === '/responses') return r.fulfill({ json: { output: [{ type: 'message', content: [{ type: 'output_text', text: 'Web says X.', annotations: [{ type: 'url_citation', url: 'https://doi.org/10.1/abc', title: 'A paper' }] }] }] }, headers: cors });
     r.fulfill({ status: 404, json: { error: { message: 'nope' } }, headers: cors });
   });
-  await page.addInitScript(() => { sessionStorage.setItem('tn.key', 'elm-test-key'); });
+  await page.addInitScript(() => { sessionStorage.setItem('tn.key', 'elm-test-key'); if (!localStorage.getItem('tn.rightTab')) localStorage.setItem('tn.rightTab', 'studio'); });
   await page.goto(BASE);
   await page.waitForFunction(() => document.querySelector('#modelSelect option[value="Qwen/Qwen3.5-397B-A17B-FP8"]'));
   ok(await page.$eval('#modelSelect', s => s.value) === 'Qwen/Qwen3.5-397B-A17B-FP8', 'default model is on-campus Qwen');
@@ -74,7 +74,7 @@ function chatReply(body) {
   ok(blocked, 'CSP blocks connections to other hosts');
 
   // sources
-  await page.setInputFiles('#fileInput', fs.readdirSync(FX).map(f => path.join(FX, f)));
+  await page.setInputFiles('#fileInput', fs.readdirSync(FX).filter(f => !f.endsWith('.png')).map(f => path.join(FX, f)) /* the .png is the lab-note attachment fixture */);
   await page.waitForFunction(() => document.querySelectorAll('.src-item').length === 6 && !document.querySelector('.src-item.busy'), null, { timeout: 30000 });
   const srcs = await page.evaluate(() => window.thistleNotebook.sources.map(s => ({ name: s.name, role: s.role, kind: s.kind, status: s.status, error: s.error, chars: s.chars, emb: s.meta.embModel, tables: !!s.tables })));
   console.log(srcs);
@@ -121,8 +121,8 @@ function chatReply(body) {
   // ⚙ Settings → Test web search: per-route diagnosis
   webMode = 'refused';
   await page.click('#btnSettings'); await page.click('#modalBody button:has-text("Test web search")');
-  await page.waitForSelector('#modalBody table.diag');
-  const diag = await page.$$eval('#modalBody table.diag tr', trs => trs.map(t => t.textContent));
+  await page.waitForSelector('#modalBody table.web-diag');
+  const diag = await page.$$eval('#modalBody table.web-diag tr', trs => trs.map(t => t.textContent));
   ok(diag.length === 4 && diag.slice(1).every(t => t.includes('ELM refused this request')), 'refused routes reported as refused, not "could not reach ELM"');
   const cmd = await page.textContent('#modalBody pre.cmd');
   ok(cmd.startsWith("printf 'ELM key: '; read -rs ELM_API_KEY; echo") && !cmd.includes('elm-test-key'), 'Terminal command works in zsh and bash; key not embedded');
@@ -238,7 +238,7 @@ function chatReply(body) {
   const [dl3] = await Promise.all([page.waitForEvent('download'), page.click('#btnSave')]);
   const tn = path.join(OUT, 'nb.tnote'); fs.copyFileSync(await dl3.path(), tn);
   const tnj = JSON.parse(fs.readFileSync(tn, 'utf8'));
-  ok(tnj.app === 'Thistle Notebook' && tnj.format === 2 && tnj.kind === 'notebook' && tnj.sources.length === 6, '.tnote header + content');
+  ok(tnj.app === 'Thistle Notebook' && tnj.format === 3 && tnj.kind === 'notebook' && tnj.sources.length === 6, '.tnote header + content');
   await page.setInputFiles('#openInput', tn);
   await page.waitForFunction(() => document.querySelectorAll('#nbSelect option').length === 2);
   ok(await page.evaluate(() => window.thistleNotebook.sources.length === 6 && window.thistleNotebook.messages.length > 3), '.tnote reopened as a new notebook');

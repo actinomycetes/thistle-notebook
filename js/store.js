@@ -2,7 +2,8 @@
 import { fileHeader, APP_TITLE } from './version.js';
 import { uid, f32ToB64, b64ToF32 } from './util.js';
 
-const DB = 'thistle-notebook', VER = 1, STORES = ['notebooks', 'sources', 'chunks', 'messages', 'notes'];
+// v2 (TN v0.7): lab notes (one per notebook, id = notebook id) and lab-note attachment files (blobs)
+const DB = 'thistle-notebook', VER = 2, STORES = ['notebooks', 'sources', 'chunks', 'messages', 'notes', 'labnotes', 'files'];
 let dbp;
 function db() {
   return dbp ||= new Promise((res, rej) => {
@@ -57,7 +58,7 @@ export async function createNotebook(name, onCampusOnly = false) {
 }
 export async function touch(nb) { nb.updated = Date.now(); await put('notebooks', nb); }
 export async function deleteNotebook(id) {
-  for (const s of ['sources', 'chunks', 'messages', 'notes']) await delWhere(s, 'nb', id);
+  for (const s of ['sources', 'chunks', 'messages', 'notes', 'files', 'labnotes']) await delWhere(s, 'nb', id);
   await del('notebooks', id);
 }
 export async function deleteSource(id) { await delWhere('chunks', 'src', id); await del('sources', id); }
@@ -65,9 +66,12 @@ export async function deleteSource(id) { await delWhere('chunks', 'src', id); aw
 // ---------- .tnote files (Thistle suite convention: header first, one extension per app) ----------
 export async function exportNotebook(nbId) {
   const nb = await get('notebooks', nbId);
-  const [sources, chunks, messages, notes] = await Promise.all(['sources', 'chunks', 'messages', 'notes'].map(s => byNb(s, nbId)));
+  const [sources, chunks, messages, notes, files] = await Promise.all(['sources', 'chunks', 'messages', 'notes', 'files'].map(s => byNb(s, nbId)));
+  const labnote = await get('labnotes', nbId);
+  // attachments travel inside the file (base64), with every version and deleted attachment: nothing is dropped
+  const filesOut = await Promise.all(files.map(async f => ({ ...f, blob: undefined, data: await blobToB64(f.blob) })));
   return JSON.stringify({
-    ...fileHeader('notebook'), savedAt: new Date().toISOString(), notebook: nb, sources, notes,
+    ...fileHeader('notebook'), savedAt: new Date().toISOString(), notebook: nb, sources, notes, labnote: labnote || null, files: filesOut,
     messages: messages.sort((a, b) => a.t - b.t),
     chunks: chunks.map(c => ({ ...c, emb: c.emb ? f32ToB64(c.emb) : null })),
   });
@@ -99,5 +103,19 @@ export async function importNotebook(d) {
   };
   await putMany('messages', (d.messages || []).map(m => ({ ...m, id: uid(), nb: newNb, meta: remapMeta(m.meta) })));
   await putMany('notes', (d.notes || []).map(n => ({ ...n, id: uid(), nb: newNb, meta: remapMeta(n.meta) })));
+  if (d.labnote) await put('labnotes', { ...d.labnote, id: newNb, nb: newNb });
+  await putMany('files', (d.files || []).map(f => { const { data, ...rest } = f; return { ...rest, id: uid(), nb: newNb, blob: b64ToBlob(data, f.type) }; }));
   return nb;
+}
+
+async function blobToB64(blob) {
+  if (!blob) return '';
+  const b = new Uint8Array(await blob.arrayBuffer()); let s = '';
+  for (let i = 0; i < b.length; i += 0x8000) s += String.fromCharCode.apply(null, b.subarray(i, i + 0x8000));
+  return btoa(s);
+}
+function b64ToBlob(b64, type = 'application/octet-stream') {
+  const s = atob(b64 || ''), b = new Uint8Array(s.length);
+  for (let i = 0; i < s.length; i++) b[i] = s.charCodeAt(i);
+  return new Blob([b], { type });
 }
