@@ -952,7 +952,7 @@ async function runStudio(t) {
       for (const [i, sub] of subs.entries()) {
         note.meta.progress = `${i + 1}/${subs.length}: ${sub.name}`; renderNotes();
         const r = await complete(t, [...others, sub], tone, `Submission being marked: "${sub.name}".`);
-        const shifted = r.text.replace(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g, (_, g) => '[' + g.replace(/\d+/g, n => +n + offset) + ']');
+        const shifted = shiftCites(r.text, r.cites, offset);
         Object.entries(r.cites).forEach(([n, c]) => (note.meta.cites[+n + offset] = c));
         offset += Object.keys(r.cites).length;
         note.content += `\n\n## ${sub.name}\n\n${shifted}`;
@@ -1014,15 +1014,29 @@ function viewNote(n) {
     h('button', { class: 'btn small danger', onclick: async () => { if (!confirm('Delete this note?')) return; await db.del('notes', n.id); S.notes = S.notes.filter(x => x !== n); await saveNb(); renderNotes(); closeModal(); } }, '🗑 Delete')), body));
 }
 // Exported reports keep their citations readable outside the app: [n] → list of sources + locations
-const citedNumbers = content => [...new Set([...String(content).matchAll(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g)].flatMap(m => m[1].match(/\d+/g).map(Number)))].sort((a, b) => a - b);
+const stripNonProse = content => String(content || '').replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
+const shiftCites = (text, cites, offset) => offset
+  ? String(text || '').replace(/\[(\d+(?:\s*[,;–-]\s*\d+)*)\]/g, (_, g) => '[' + g.replace(/\d+/g, n => Object.prototype.hasOwnProperty.call(cites || {}, n) ? +n + offset : n) + ']')
+  : String(text || '');
+const citedNumbers = content => {
+  const nums = new Set();
+  for (const m of String(content || '').matchAll(/\[(\d+(?:\s*[,;–-]\s*\d+)*)\]/g)) {
+    for (const part of m[1].split(/\s*[,;]\s*/)) {
+      const r = part.match(/^(\d+)\s*[–-]\s*(\d+)$/);
+      if (r) { const a = +r[1], b = Math.min(+r[2], a + 30); for (let i = a; i <= b; i++) nums.add(i); }
+      else if (/^\d+$/.test(part.trim())) nums.add(+part.trim());
+    }
+  }
+  return [...nums].sort((a, b) => a - b);
+};
 function withRefs(d) {
-  const c = d.cites || {}, content = String(d.content).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '');
+  const c = d.cites || {}, content = stripNonProse(d.content);
   const refs = citedNumbers(content).filter(i => c[i]).map(i => `[${i}] ${c[i].source}, ${c[i].loc}`);
   const web = (d.web?.citations || []).map((w, i) => `[W${i + 1}] ${w.title} — ${w.url}`);
   return content + (refs.length || web.length ? `\n\n---\n**Sources cited**\n\n${[...refs, ...web].map(r => '- ' + r).join('\n')}\n` : '');
 }
 function sourcesSheet(d) {
-  const c = d.cites || {}, rows = citedNumbers(d.content).filter(i => c[i]).map(i => [`[${i}]`, c[i].source, c[i].loc, c[i].text.replace(/\s+/g, ' ').slice(0, 500)]);
+  const c = d.cites || {}, rows = citedNumbers(stripNonProse(d.content)).filter(i => c[i]).map(i => [`[${i}]`, c[i].source, c[i].loc, c[i].text.replace(/\s+/g, ' ').slice(0, 500)]);
   (d.web?.citations || []).forEach((w, i) => rows.push([`[W${i + 1}]`, w.title, w.url, '']));
   return rows.length ? [{ title: 'Sources cited', header: ['Citation', 'Source', 'Location', 'Passage (start)'], rows }] : [];
 }
@@ -1386,4 +1400,4 @@ async function init() {
 
 init().catch(e => { console.error(e); document.body.prepend(h('div', { class: 'err-box' }, 'Thistle Notebook failed to start: ' + e.message)); });
 window.thistleNotebook = S; // handy for debugging, like window.thistleFlow
-S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile, openNotebook }; // for tests/robust.e2e.cjs
+S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile, openNotebook, citedNumbers, sourcesSheet, shiftCites }; // for tests/robust.e2e.cjs

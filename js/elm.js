@@ -64,8 +64,16 @@ export class ELM {
       }
       this.reachable = true;
       if (r.status === 429 && attempt < 2) {
-        const wait = Math.min(30, +(r.headers.get('Retry-After') || 5));
-        await new Promise(res => setTimeout(res, wait * 1000)); continue;
+        const ra = Number(r.headers.get('Retry-After'));
+        const wait = Math.min(30, Number.isFinite(ra) && ra >= 0 ? ra : 5);
+        await new Promise((res, rej) => {
+          const abortErr = () => (signal?.reason?.name === 'AbortError' ? signal.reason : new DOMException('Aborted', 'AbortError'));
+          if (signal?.aborted) return rej(abortErr());
+          const onAbort = () => { clearTimeout(timer); rej(abortErr()); };
+          const timer = setTimeout(() => { signal?.removeEventListener('abort', onAbort); res(); }, wait * 1000);
+          signal?.addEventListener('abort', onAbort, { once: true });
+        });
+        continue;
       }
       break;
     }
@@ -106,8 +114,10 @@ export class ELM {
 
   // If the model rejects an optional parameter, drop it and try again.
   async _withFallback(p, fn) {
+    let lastErr;
     for (let i = 0; i < 5; i++) {
       try { return await fn(p); } catch (e) {
+        lastErr = e;
         if (e.status === -1) { // refused, reason hidden: retry once without every optional parameter
           const opt = ['service_tier', 'reasoning_effort', 'temperature', 'max_tokens', 'max_completion_tokens'].filter(k => k in p);
           if (!opt.length || p._stripped) throw e;
@@ -121,6 +131,7 @@ export class ELM {
         delete p[k];
       }
     }
+    throw lastErr || new ELMError('Request failed after retries.', 400);
   }
 
   // onDelta({text|thinking|usage}); returns the full text
@@ -129,24 +140,32 @@ export class ELM {
     const r = await this._withFallback(p, p => this.req('/chat/completions', { body: clean(p), signal: opts.signal, raw: true }));
     const reader = r.body.getReader(), dec = new TextDecoder();
     let buf = '', full = '';
+    const handleLine = raw => {
+      const line = raw.trim();
+      if (!line.startsWith('data:')) return;
+      const d = line.slice(5).trim();
+      if (d === '[DONE]') return;
+      let j; try { j = JSON.parse(d); } catch { return; }
+      if (j.error) throw new ELMError(j.error.message || 'Stream error', 500);
+      if (j.usage) onDelta({ usage: j.usage });
+      const delta = j.choices?.[0]?.delta;
+      if (!delta) return;
+      const th = delta.reasoning_content || delta.reasoning;
+      if (th) onDelta({ thinking: th });
+      if (delta.content) { full += delta.content; onDelta({ text: delta.content }); }
+    };
     for (; ;) {
       const { value, done } = await reader.read();
-      if (done) break;
+      if (done) {
+        buf += dec.decode();
+        for (const line of buf.split('\n')) handleLine(line);
+        break;
+      }
       buf += dec.decode(value, { stream: true });
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
-        const line = buf.slice(0, i).trim(); buf = buf.slice(i + 1);
-        if (!line.startsWith('data:')) continue;
-        const d = line.slice(5).trim();
-        if (d === '[DONE]') continue;
-        let j; try { j = JSON.parse(d); } catch { continue; }
-        if (j.error) throw new ELMError(j.error.message || 'Stream error', 500);
-        if (j.usage) onDelta({ usage: j.usage });
-        const delta = j.choices?.[0]?.delta;
-        if (!delta) continue;
-        const th = delta.reasoning_content || delta.reasoning;
-        if (th) onDelta({ thinking: th });
-        if (delta.content) { full += delta.content; onDelta({ text: delta.content }); }
+        handleLine(buf.slice(0, i));
+        buf = buf.slice(i + 1);
       }
     }
     return full;

@@ -53,13 +53,13 @@ export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, l
 }
 
 // ---------------- Markdown -> .docx ----------------
-const X = s => esc(s).replace(/&#39;/g, '&apos;');
+const X = s => esc(String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')).replace(/&#39;/g, '&apos;');
 function runs(tokens, fmt = {}) {
   let out = '';
   for (const t of tokens || []) {
     if (t.type === 'strong') out += runs(t.tokens, { ...fmt, b: 1 });
     else if (t.type === 'em') out += runs(t.tokens, { ...fmt, i: 1 });
-    else if (t.type === 'codespan') out += run(t.text, { ...fmt, code: 1 });
+    else if (t.type === 'codespan') out += run(decode(t.text), { ...fmt, code: 1 });
     else if (t.type === 'link') {
       const href = t.href || '';
       if (href.startsWith('attachment:')) out += runs(t.tokens, fmt) + run(` (attachment ${decodeURIComponent(href.slice(11))})`, { ...fmt, i: 1 });
