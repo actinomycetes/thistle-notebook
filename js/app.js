@@ -11,6 +11,8 @@ import { renderMarkdown, markdownToDocx } from './md.js';
 import { extractTables, tableToCsv, tableToTsv, tablesToXlsx, reportHtml, markdownToHtml } from './export.js';
 import { parseSpecs, findTable, buildG, tplotFile, ThistlePlot, ThistleFlow, defaultSuiteUrl } from './thistle.js';
 import { createLab } from './labui.js';
+import { createProtocols } from './protocolui.js';
+import { pageTitle } from './labnote.js';
 import { SECTIONS as LAB_SECTIONS } from './labnote.js';
 import { labProtocol } from './prompts.js';
 import * as users from './users.js';
@@ -28,6 +30,7 @@ const SETTINGS_DEFAULTS = {
   webSearchStatus: '', webSearchDetail: '', // '' = not tried, 'ok', 'unavailable' (set by a real search or ⚙ Test web search)
   labAutoApply: false, // lab note updates from the chat: false = Accept / Edit / Reject each, true = applied automatically
   wikiBase: 'https://www.wiki.ed.ac.uk', wikiSpace: '', // for links to wiki pages (protocols) in formatted-text copies
+  wikiAttachmentsMacro: 'no', // v0.8: Wikibench page templates add the attachments macro themselves
 };
 // ELM keys belong to users (js/users.js, v0.7); S.settings.apiKey is the current user's active key
 function loadSettings() {
@@ -45,7 +48,7 @@ const S = {
   files: new Map(),      // source id → original File, for this browser session only (browsers cannot keep paths)
   tableCache: new Map(), // source id → tables re-read from a linked original (datasets too large to keep)
   histPos: -1,
-  users: null, lab: null,
+  users: null, lab: null, protocols: null,
 };
 S.users = users.loadUsers(); S.settings.apiKey = users.activeKeyValue(S.users);
 const userName = () => users.currentUser(S.users)?.name || '';
@@ -1145,6 +1148,7 @@ function settingsDialog() {
       ...field('tfUrl', 'Thistle Flow address', txt('tfUrl', 'url', defaultSuiteUrl('thistle-flow'))),
       ...field('wikiBase', 'Wiki address', txt('wikiBase', 'url', 'https://www.wiki.ed.ac.uk'), 'Used to link wiki pages (e.g. protocols) in formatted-text copies of lab note entries'),
       ...field('wikiSpace', 'Wiki space key', txt('wikiSpace', 'text', 'e.g. WIKB'), 'The space of your Wikibench lab book; links to pages in it are made from their titles'),
+      ...field('wikiAttachmentsMacro', 'Attachments macro in wiki markup', (() => { const e = h('select', {}, h('option', { value: 'no' }, 'no (the wiki page template adds it)'), h('option', { value: 'yes' }, 'yes, add {attachments} at the bottom')); e.value = s.wikiAttachmentsMacro || 'no'; return e; })()),
     ),
     h('div', { class: 'hint-box' }, 'Keys are kept only in this browser. Request one on ELM (API keys → New Key Request); keys are renewed yearly, so add the new one and keep or remove the old. ELM asks API users to try lower-cost models first and to use flex where possible.'),
     status,
@@ -1251,6 +1255,7 @@ PDF (scanned pages are read by a vision model), Word, PowerPoint, Excel/CSV, tex
 - **Nothing is removed**: every change is a version signed with your name and time (🕘 versions, ⋯ → Change log). Deleted entries and attachments are kept and can be restored.
 - **👤** shows who is writing; **⚙ Settings → Users and ELM keys** holds each person's name and their keys (keys are renewed yearly).
 - **📋 Copy for wiki…**: Create assay on the Study page → ＋ → Markup → Confluence wiki → paste → drag the attachments onto the page.
+- **📚 Protocols**: a library shared by all notebooks. 👥 Public protocols are seen by every user of this browser and go into shared library files; 🔒 private ones only by their owner. Every edit is a version. **📚 Add a protocol** under the Protocol section records the version used (a frozen copy) with your deviations.
 
 ### Working in a notebook
 - **Source tabs**: keep several sets of sources in one notebook. Click a tab to show it; **tick** it to use its sources. Only sources in ticked tabs are used. 📁 under a source puts it in several tabs (e.g. one rubric for every group). Double-click a tab to rename it.
@@ -1303,11 +1308,20 @@ async function init() {
   renderStudio();
   S.lab = createLab({
     h, $, db, toast, modal, closeModal, uid, saveBlob, saveText, safeName, fmtBytes, pickFiles, author, wikiUrl,
-    nb: () => S.nb, touch: () => saveNb(),
+    nb: () => S.nb, touch: () => saveNb(), protocols: () => S.protocols, attachmentsMacro: () => S.settings.wikiAttachmentsMacro === 'yes',
     autoApply: () => !!S.settings.labAutoApply, setAutoApply: v => { S.settings.labAutoApply = v; saveSettings(S.settings); },
     saveMessage: m => db.put('messages', m),
     rerenderMessage: m => { const old = $(`.msg[data-id="${m.id}"]`); if (old) old.replaceWith(messageEl(m)); },
   });
+  S.protocols = createProtocols({
+    h, $, db, toast, modal, closeModal, saveText, author, wikiUrl, pickFiles, isIOS: IS_IOS,
+    userId: () => users.currentUser(S.users)?.id, userName,
+    activeEntry: () => S.lab.activeEntry(), entryTitle: pageTitle,
+    insertIntoEntry: (e, text, snap) => S.lab.insertIntoEntry(e, text, snap),
+    sources: () => S.sources.filter(s => s.status === 'ready' && s.segments?.length),
+    parseFile: f => parseFile(f, { elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(), log: () => { } }),
+  });
+  await S.protocols.load();
   let rt = 'lab'; try { rt = localStorage.getItem('tn.rightTab') || 'lab'; } catch { }
   showRightTab(rt);
   $$('#rightTabs button').forEach(b => (b.onclick = () => showRightTab(b.dataset.tab)));

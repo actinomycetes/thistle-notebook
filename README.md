@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.7.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.8.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -82,12 +82,34 @@ Confluence template (ISA: Investigation → Study → Assay).
 - **📋 Copy for wiki…** guides you through it:
   1. Click **Create assay** on your Study page and paste the title.
   2. Click **＋ → Markup → Confluence wiki** and paste the markup. It contains headings, tables, links to protocol
-     pages, images and links to attachments, and the **attachments macro** at the bottom.
+     pages, and images and links to attachments. Wikibench page templates add the attachments list themselves, so the
+     `{attachments}` macro is off by default (Settings → *Attachments macro in wiki markup* adds it).
   3. Drag the attachments onto the page (**⤓ Attachments** downloads them).
 
   **Copy as formatted text** is the alternative: paste straight into the page body, without attachment links.
   `examples/wikibench/` has a ready-made paste test of the Wikibench example assay.
 - **Saving.** Lab notes and attachments are saved in the `.tnote` file (format 3) with every version.
+- **📚 Protocol library** (v0.8), shared by all notebooks in this browser. Each protocol has an owner (a user),
+  a title, its wiki page title, tags and Markdown steps.
+  - **Visibility.** 👥 **Public** protocols are visible to every user of this browser and go into shared library
+    files; 🔒 **private** ones are visible only to their owner. This organises sharing; it does not protect secrets
+    from someone using the same device.
+  - **Changes.** Only the owner edits or deletes. Others can **⎘ Duplicate** a protocol into their own private copy,
+    which records where it came from. Every edit is a new **version** with a change note; restoring adds a version;
+    deleting and restoring are events (**My deleted**).
+  - **Adding protocols.** **＋ New**, **⬆ From files** (Word, PDF, Markdown, text), **📋 Paste** (e.g. from the wiki
+    page), or **📄 From a source** in the notebook.
+  - **Library files.** **⤓ Save library** writes a `.tnote` library file (`"kind": "protocols"`): public protocols, plus
+    your private ones only if you tick that. **📂 Open library** adds a colleague's file; protocols you already have gain
+    their new versions, and nothing is removed or overwritten.
+  - **📋 Copy for wiki** gives a protocol's wiki markup for a page under *Protocols*.
+- **Using a protocol in an entry.** **📚 Add a protocol** under the Protocol section, or **📚 Protocol…** while
+  editing, inserts `Followed [title](wiki:page) (protocol version n).` and your **deviations**.
+  - The steps are copied in too when the protocol has no wiki page (optional otherwise).
+  - The entry keeps a **frozen copy** of the version used, so later edits to the protocol never change the record
+    (**Protocols recorded** under the section).
+  - In the Lab notebook mode the assistant sees these copies and the library titles, so it can describe deviations
+    against what was actually followed.
 
 ## Working in a notebook
 - **Source tabs.** Keep several sets of sources in one notebook, for example "Papers", "Marking: group A" and
@@ -192,6 +214,10 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   version kept (time, author, how), chat updates in the Lab notebook mode (Accept / Edit / Reject or automatic),
   attachments, Add to lab note from answers and Thistle Plot results, users with several ELM keys, and Copy for wiki
   (Confluence wiki markup with the attachments macro, or formatted text) for Wikibench. `.tnote` format 3.
+- **v0.8.0:** 📚 protocol library — public / private protocols owned by users, versions with change notes, duplicate,
+  delete / restore, import from files, pasted text or sources, library files that merge without removing anything, copy
+  for the wiki; protocols inserted into entries with deviations and a frozen copy of the version used. The wiki markup
+  no longer adds the attachments macro (Wikibench templates do; optional in Settings).
 - **Thistle Flow**: in 🔬 Thistle apps → Thistle Flow, load FCS files and gate as usual, then **⬇ Add TF statistics as
   source**. The population statistics become a dataset the assistant can analyse and send on to Thistle Plot. `.tflow`
   files can also be added as sources (gating hierarchy and samples).
@@ -220,17 +246,18 @@ npm test                                          # no web server needed (tests/
 chat with citations and web search, a Thistle Plot ANOVA (values checked against the CSV), marking, Word/Excel/CSV/HTML
 exports (file structure checked),
 `.tnote` round trip, the on-campus restrictions, and the rule that no other host can be contacted.
+`tests/labnote.e2e.cjs` covers the lab note and the Wikibench export, `tests/protocols.e2e.cjs` the protocol library.
 `tests/workspace.e2e.cjs` covers source tabs, deleting, re-running and recalling questions, finding moved files,
 resizable panes and closing notebooks. `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.7.0
+## Known limitations of v0.8.0
 - The wiki export has not yet been tried on wiki.ed.ac.uk (see `examples/wikibench/README.md`). Nothing can be
   published to the wiki directly: the wiki does not accept requests from browser apps hosted elsewhere, so the route is
   copy and paste.
 - Attachments are stored inside `.tnote` files (base64), so large images make large files.
-- A stored protocol library (public / private protocols) is planned for v0.8; for now link to protocol pages with
-  `[name](wiki:Page title)`.
+- The protocol library lives in this browser. Share it as a library file, and save one as a backup: clearing site
+  data deletes it. A notebook's `.tnote` carries only the frozen copies of the protocols its entries used.
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional

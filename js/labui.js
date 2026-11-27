@@ -91,6 +91,7 @@ export function createLab(ctx) {
     p.append(h('div', { class: 'lab-bar' },
       note?.entries.length ? sel : h('span', { class: 'hint' }, 'No assay entries yet.'),
       h('button', { class: 'btn small primary', title: 'New assay entry (one Wikibench assay page)', onclick: newEntryDialog }, '＋ New assay'),
+      h('button', { class: 'btn small', title: 'Protocol library: public and private protocols, shared by all notebooks', onclick: () => ctx.protocols().openLibrary() }, '📚 Protocols'),
       e ? h('button', { class: 'btn small lab-menu-btn', title: 'Type, change log, delete…', onclick: ev => entryMenu(ev.currentTarget, e) }, '⋯') : null,
       gone.length ? h('button', { class: 'btn small lab-deleted-btn', title: 'Deleted entries are kept in the record and can be restored', onclick: () => { L.showDeleted = !L.showDeleted; if (L.showDeleted && !liveEntries().length) L.note.activeEntry = gone[gone.length - 1].id; render(); } }, `${L.showDeleted ? 'Hide' : '🗑'} deleted (${gone.length})`) : null));
     if (!e) {
@@ -145,20 +146,26 @@ export function createLab(ctx) {
       const md = cur(field);
       box.append(md.trim() ? renderLabMd(md, entry?.id) : h('div', { class: 'lab-hint', onclick: () => { L.editing = key; render(); } }, hint || 'Click ✎ to write.'));
     }
+    if (key === 'protocol' && entry?.protocolsUsed?.length) box.append(h('div', { class: 'lab-protos hint' }, 'Protocols recorded: ',
+      entry.protocolsUsed.map(s => h('button', { class: 'link-btn', title: 'Show the frozen copy kept in this entry', onclick: () => snapshotDialog(s) }, `📚 ${s.title} v${s.v}`)).flatMap((b, i) => (i ? [' · ', b] : [b]))));
+    if (key === 'protocol' && entry && !isDeleted(entry) && !editing) box.append(h('button', { class: 'btn small lab-proto-add', onclick: () => ctx.protocols().insertDialog(entry) }, '📚 Add a protocol'));
     return box;
   }
   function editorEl(field, key, entry) {
+    const pending = []; // protocols inserted in this edit: recorded in the entry when it is saved
     const ta = h('textarea', { class: 'lab-ta', rows: Math.min(18, Math.max(5, cur(field).split('\n').length + 2)), placeholder: 'Markdown: **bold**, - lists, | tables |, [protocol](wiki:Page title), ![figure](attachment:file.png)' });
     ta.value = cur(field);
     const saveIt = async () => {
       const who = await ctx.author(); if (!who) return;
       const r = revise(field, ta.value, who, 'edit');
+      if (r && entry) for (const snap of pending) if (ta.value.includes(snap.title)) recordProtocol(entry, snap, who);
       L.editing = null; if (r) await save(); render();
       if (r) toast('Saved (earlier versions are kept: 🕘)');
     };
     ta.onkeydown = ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveIt(); } if (ev.key === 'Escape') { ev.stopPropagation(); L.editing = null; render(); } };
     const insert = s => { const a = ta.selectionStart, b = ta.selectionEnd; ta.value = ta.value.slice(0, a) + s + ta.value.slice(b); ta.focus(); ta.selectionStart = ta.selectionEnd = a + s.length; };
     return h('div', { class: 'lab-edit' }, ta, h('div', { class: 'lab-edit-tools' },
+      entry ? h('button', { class: 'btn small', title: 'Insert a protocol from the library (the entry keeps a frozen copy of the version used)', onclick: () => ctx.protocols().insertDialog(entry, (text, snap) => { insert(text); pending.push(snap); }) }, '📚 Protocol…') : null,
       entry ? h('button', { class: 'btn small', title: 'Insert a link to, or image of, one of this entry\'s attachments', onclick: ev => attachmentPicker(ev.currentTarget, entry, insert) }, '📎 Attachment ▾') : null,
       h('button', { class: 'btn small', title: 'Link to a wiki page by its exact title (e.g. a protocol page)', onclick: () => { const t = prompt('Exact title of the wiki page (e.g. Kirby-Bauer Disk Diffusion Susceptibility Test Protocol). For another space: SPACEKEY:Title'); if (t && t.trim()) insert(`[${t.trim().replace(/^[A-Z0-9]+:/, '')}](wiki:${t.trim()})`); } }, '📘 Wiki link'),
       h('span', { class: 'hint' }, 'Ctrl/⌘+Enter saves'), h('span', { class: 'grow' }),
@@ -175,6 +182,23 @@ export function createLab(ctx) {
     pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 10)) + 'px'; pop.style.top = (r.bottom + 4) + 'px';
   }
 
+  function recordProtocol(e, snap, who) {
+    (e.protocolsUsed ||= []).push(snap);
+    (e.events ||= []).push({ t: Date.now(), author: who, what: 'protocol recorded', name: `${snap.title} v${snap.v}` });
+  }
+  /** From the library: append the reference to the Protocol section and keep the frozen copy. */
+  async function insertIntoEntry(e, text, snap) {
+    const who = await ctx.author(); if (!who) return false;
+    if (!e || isDeleted(e)) { toast('Open an assay entry first', true); return false; }
+    revise(e.fields.protocol, appendText(cur(e.fields.protocol), text), who, 'protocol', `inserted ${snap.title} v${snap.v}`);
+    recordProtocol(e, snap, who); await save(); render(); toast(`${snap.title} (v${snap.v}) added to the Protocol section`);
+    return true;
+  }
+  function snapshotDialog(s) {
+    modal(`📚 ${s.title} — version ${s.v} (as recorded)`, h('div', {},
+      h('p', { class: 'hint' }, `Recorded by ${s.author} on ${fmtTime(s.t)} from ${s.owner}'s protocol${s.wiki ? ' · wiki page ' + s.wiki : ''}. This copy does not change when the protocol is edited later.`),
+      renderLabMd(s.body || '(no steps)', null)));
+  }
   function historyDialog(field, label, entry) {
     const revs = [...field.revs].map((r, i) => ({ ...r, n: i + 1 })).reverse();
     modal(`Versions of “${label}”`, h('div', {},
@@ -188,7 +212,7 @@ export function createLab(ctx) {
           } }, '↺ Restore this version')),
         r.text.trim() ? renderLabMd(r.text, entry?.id) : h('div', { class: 'hint' }, '(empty)')))));
   }
-  const viaLabel = v => ({ edit: 'edited', chat: 'from chat', restore: 'restored', created: 'created', add: 'added from chat/analysis' }[v] || v || '');
+  const viaLabel = v => ({ edit: 'edited', chat: 'from chat', restore: 'restored', created: 'created', add: 'added from chat/analysis', protocol: 'protocol inserted' }[v] || v || '');
 
   function attachmentsEl(e) {
     const fs = filesOf(e.id);
@@ -299,7 +323,7 @@ export function createLab(ctx) {
     saveBlob(zip(files), `${safeName(pageTitle(e))} attachments.zip`);
   }
   function wikiDialog(e) {
-    const w = entryToWiki(e), html = entryToHtml(e, { wikiUrl: ctx.wikiUrl }), fs = filesOf(e.id);
+    const macro = ctx.attachmentsMacro(), w = entryToWiki(e, { attachmentsMacro: macro }), html = entryToHtml(e, { wikiUrl: ctx.wikiUrl }), fs = filesOf(e.id);
     const missing = w.files.filter(n => !fs.some(f => f.name === n));
     const copy = async (text, what, htmlText) => {
       try {
@@ -315,9 +339,9 @@ export function createLab(ctx) {
           h('button', { class: 'btn small', onclick: () => copy(w.title, 'Page title') }, '📋 Copy title')),
         h('li', {}, 'In the editor, click ', h('b', {}, '＋ (Insert more content) → Markup'), ', choose ', h('b', {}, 'Confluence wiki'), ', paste, then ', h('b', {}, 'Insert'), '. ',
           h('button', { class: 'btn small primary', onclick: () => copy(w.markup, 'Wiki markup') }, '📋 Copy wiki markup')),
-        h('li', {}, fs.length ? ['Drag these files onto the page: they become its attachments, the images and 📎 links in the text find them by name, and the ', h('b', {}, 'Attachments'), ' list at the bottom shows them. ',
+        h('li', {}, fs.length ? [`Drag these files onto the page: they become its attachments, and the images and 📎 links in the text find them by name${macro ? '; the Attachments list at the bottom shows them' : ''}. `,
           h('button', { class: 'btn small', onclick: () => downloadAttachments(e) }, fs.length > 1 ? '⤓ Download all (.zip)' : '⤓ Download'),
-          h('ul', {}, fs.map(f => h('li', {}, h('a', { href: fileUrl(f), download: f.name }, f.name))))] : 'No attachments: the Attachments list at the bottom stays empty until you add files.'),
+          h('ul', {}, fs.map(f => h('li', {}, h('a', { href: fileUrl(f), download: f.name }, f.name))))] : 'No attachments to add.'),
         h('li', {}, h('b', {}, 'Save'), ' (Publish).')),
       missing.length ? h('div', { class: 'warn-box' }, `The text refers to ${missing.length} file(s) that are not attached: ${missing.join(', ')}.`) : null,
       h('details', {}, h('summary', {}, 'Show the wiki markup'), h('pre', { class: 'cmd wiki-pre' }, w.markup)),
@@ -334,6 +358,7 @@ export function createLab(ctx) {
     return {
       study: { title: f ? cur(f.title) : ctx.nb()?.name, purpose: f ? cur(f.purpose) : '' },
       entry: e ? { title: cur(e.fields.title), date: cur(e.fields.date), type: e.type, sections: Object.fromEntries(entrySections(e).map(k => [k, cur(e.fields[k])])) } : null,
+      protocolsUsed: e?.protocolsUsed || [], library: ctx.protocols().promptList(),
       sectionLabels: Object.fromEntries(Object.entries(SECTIONS).map(([k, v]) => [k, v.label])),
     };
   }
@@ -407,5 +432,5 @@ export function createLab(ctx) {
     return true;
   }
 
-  return { load, render, activeEntry, card, autoApply, addToSection, addAttachments, promptContext, sections: () => (activeEntry() ? entrySections(activeEntry()) : Object.keys(TEMPLATES.wet)), _L: L };
+  return { load, render, activeEntry, card, insertIntoEntry, autoApply, addToSection, addAttachments, promptContext, sections: () => (activeEntry() ? entrySections(activeEntry()) : Object.keys(TEMPLATES.wet)), _L: L };
 }

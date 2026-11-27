@@ -3,7 +3,8 @@ import { fileHeader, APP_TITLE } from './version.js';
 import { uid, f32ToB64, b64ToF32 } from './util.js';
 
 // v2 (TN v0.7): lab notes (one per notebook, id = notebook id) and lab-note attachment files (blobs)
-const DB = 'thistle-notebook', VER = 2, STORES = ['notebooks', 'sources', 'chunks', 'messages', 'notes', 'labnotes', 'files'];
+// v3 (TN v0.8): protocol library (shared by all notebooks in this browser; not part of a notebook's .tnote)
+const DB = 'thistle-notebook', VER = 3, STORES = ['notebooks', 'sources', 'chunks', 'messages', 'notes', 'labnotes', 'files', 'protocols'];
 let dbp;
 function db() {
   return dbp ||= new Promise((res, rej) => {
@@ -12,7 +13,7 @@ function db() {
       const d = r.result;
       for (const s of STORES) if (!d.objectStoreNames.contains(s)) {
         const os = d.createObjectStore(s, { keyPath: 'id' });
-        if (s !== 'notebooks') os.createIndex('nb', 'nb');
+        if (s !== 'notebooks' && s !== 'protocols') os.createIndex('nb', 'nb');
         if (s === 'chunks') os.createIndex('src', 'src');
       }
     };

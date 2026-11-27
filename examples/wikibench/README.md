@@ -6,7 +6,7 @@ These files are what Thistle Notebook's **📋 Copy for wiki…** produces for a
 
 | File | What it is |
 |---|---|
-| `assay.wiki.txt` | Confluence wiki markup: the main route. Gives page links, attachment images and links, and the attachments macro |
+| `assay.wiki.txt` | Confluence wiki markup: the main route. Gives page links and attachment images and links (no attachments macro: Wikibench page templates add it; turn it on in Settings if your space needs it) |
 | `assay-formatted.html` | Formatted text for pasting straight into the page body (the alternative route) |
 | `antibiotic_plate_labelled.png` | The attachment: an illustrative plate, with zone sizes as in the example |
 
@@ -14,19 +14,16 @@ These files are what Thistle Notebook's **📋 Copy for wiki…** produces for a
 1. In your Wikibench lab book, open a **Study** page and click **Create assay**. Title: `2017-09-10 Assay Antibiotics resistance`.
 2. In the editor, put the cursor in the main (left) column, then click **＋ (Insert more content) → Markup**.
 3. Choose **Confluence wiki**, paste the whole of `assay.wiki.txt`, and click **Insert**.
-4. Drag `antibiotic_plate_labelled.png` onto the page. It becomes an attachment, and the image and the
-   attachments list should show it.
+4. Drag `antibiotic_plate_labelled.png` onto the page. It becomes an attachment, and the image should show it.
 5. **Publish**, then check:
    - the protocol links (they point to pages titled *Kirby-Bauer Disk Diffusion Susceptibility Test Protocol*
      and *Agar recipe*, so they work only in a space that has those pages);
    - the table;
-   - the image;
-   - the attachments list at the bottom.
+   - the image.
 
 ## Test 2: formatted text
 Open `assay-formatted.html` in a browser, select from "An assay…" to the end, copy, and paste into the body of a
 new assay page. Headings, the table, italics and links should survive. Attachments must be added and linked by hand
 in this route; that is why the markup route is recommended.
 
-Please report what did and did not survive. Confluence versions differ, and these routes have not yet been tried on
-wiki.ed.ac.uk.
+Tried on wiki.ed.ac.uk (Wikibench) in November 2026: the markup route worked.

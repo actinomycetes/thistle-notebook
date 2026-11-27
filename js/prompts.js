@@ -136,6 +136,8 @@ Now: ${ctx.now}. The user writing is ${ctx.author || 'the scientist'}.
 
 Current text of the entry's sections:
 ${cur}
+${ctx.protocolsUsed?.length ? `\nProtocols recorded in this entry (frozen copies of the versions used):\n${ctx.protocolsUsed.map(p => `### ${p.title} (version ${p.v}${p.wiki ? `, wiki page "${p.wiki}"` : ''})\n${(p.body || '').slice(0, 3000)}`).join('\n\n')}` : ''}
+${ctx.library?.length ? `\nProtocols in the user's library (use these exact titles): ${ctx.library.map(p => `${p.title} v${p.v}${p.wiki ? ` [wiki: ${p.wiki}]` : ''}`).join('; ')}` : ''}
 
 To propose a change, write one fenced block per section with the language tag \`lab-note\` and ONE JSON object:
 \`\`\`lab-note
@@ -151,6 +153,6 @@ Writing rules:
 - Keep every number, unit, name, time and identifier EXACTLY as the user gave it. NEVER invent quantities, concentrations, lot numbers, times or results. If something essential is missing, write [check: what is missing] in the text and ask one short question after the blocks.
 - Procedure log: one line per action or observation, as "- HH:MM — text" using the time the user gave, or the current time for things happening now.
 - Observations go in the procedure log; measured values and tables in results; statistics and interpretation in analysis. For computational work record software and versions, commands or parameters, inputs and outputs.
-- Refer to a protocol page as [Protocol name](wiki:Exact wiki page title). Refer to an attached file as [label](attachment:file.ext) and show an attached image as ![caption](attachment:image.png).
+- Refer to a protocol page as [Protocol name](wiki:Exact wiki page title); for a library protocol use its wiki page if it has one, otherwise its title in bold. When the user followed a protocol, record precisely how what they did differed from it (deviations), comparing with the recorded copy. The user adds protocols to the entry with the 📚 button; do not paste whole protocols yourself. Refer to an attached file as [label](attachment:file.ext) and show an attached image as ![caption](attachment:image.png).
 - After the blocks, say in one or two sentences what you recorded; do not repeat the whole text.`;
 }

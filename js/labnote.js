@@ -128,7 +128,7 @@ function wikiBlocks(tokens, ctx, depth = 0) {
   const out = [];
   for (const t of tokens) {
     switch (t.type) {
-      case 'heading': out.push(`h${Math.min(3 + t.depth, 6)}. ${wikiInline(t.tokens, ctx)}`); break;
+      case 'heading': out.push(`h${Math.min((ctx.headingBase ?? 3) + t.depth, 6)}. ${wikiInline(t.tokens, ctx)}`); break;
       case 'paragraph': out.push(wikiInline(t.tokens, ctx)); break;
       case 'text': out.push(t.tokens ? wikiInline(t.tokens, ctx) : wikiEsc(t.text)); break;
       case 'list': out.push(wikiList(t, ctx, '')); break;
@@ -159,11 +159,12 @@ function wikiList(list, ctx, prefix) {
 }
 const decodeEntities = s => String(s).replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e]));
 const lex = md => window.marked.lexer(fixTargets(md), { gfm: true, breaks: true });
-export function mdToWiki(md, ctx = { files: new Set(), imageWidth: 450 }) { return wikiBlocks(lex(md), ctx); }
+// headingBase 3: inside an assay page (sections are h3, so ## becomes h5); 0: a page of its own (## stays h2)
+export function mdToWiki(md, ctx = { files: new Set(), imageWidth: 450 }) { return wikiBlocks(lex(md), { files: new Set(), imageWidth: 450, ...ctx }); }
 
-/** One Assay page body in Confluence wiki markup: sections as h3 (aim without heading, as in Wikibench), the
- *  attachments macro at the bottom, and a provenance line. Returns {title, markup, files}. */
-export function entryToWiki(e, { footer = true, imageWidth = 450, attachmentsMacro = true } = {}) {
+/** One Assay page body in Confluence wiki markup: sections as h3 (aim without heading, as in Wikibench) and a provenance
+ *  line; the attachments macro only if asked (v0.8: off by default, Wikibench page templates add it). Returns {title, markup, files}. */
+export function entryToWiki(e, { footer = true, imageWidth = 450, attachmentsMacro = false } = {}) {
   const ctx = { files: new Set(), imageWidth }, parts = [];
   for (const k of entrySections(e)) {
     const md = cur(e.fields[k]).trim(); if (!md) continue;

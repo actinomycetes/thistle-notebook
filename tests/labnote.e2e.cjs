@@ -175,11 +175,11 @@ function labReply(last) {
     ['[Kirby-Bauer Disk Diffusion Susceptibility Test Protocol|Kirby-Bauer Disk Diffusion Susceptibility Test Protocol]', 'protocol linked to its wiki page by title (hyphen not escaped)'],
     ['||Label||Antibiotic||Zone size (mm)||', 'table header row'], ['|A|Kanamycin|39|', 'table rows'],
     ['!antibiotic_plate_labelled.png|width=450!', 'image of an attachment'],
-    ['h3. Attachments\n\n{attachments}', 'attachments macro at the bottom'],
     ['* 18:00 — Plates were incubated at 37 °C for 18 h.', 'procedure log line as a bullet'],
     ['\\[check: repeat with fresh discs\\]', 'square brackets escaped (not turned into links)'],
     ['_Written with Thistle Notebook by E. Grant, A. Second;', 'provenance line with authors']]) ok(markup.includes(frag), 'wiki markup: ' + what);
   ok(!/\{\{|\bnull\b|undefined/.test(markup), 'wiki markup has no stray artefacts');
+  ok(!markup.includes('{attachments}'), 'no attachments macro by default (the Wikibench template adds it)');
   await page.click('#modalBody button:has-text("Copy as formatted text")');
   await page.waitForFunction(() => document.querySelector('#toast')?.textContent.includes('Formatted text copied'));
   const html = await page.evaluate(async () => { const it = (await navigator.clipboard.read())[0]; return await (await it.getType('text/html')).text(); });

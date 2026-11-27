@@ -16,7 +16,3 @@ h3. Results
 |G|Teicoplanin|27|
 
 !antibiotic_plate_labelled.png|width=450!
-
-h3. Attachments
-
-{attachments}
