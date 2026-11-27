@@ -46,7 +46,10 @@ export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, l
   }
   // Export buttons under each table (index matches extractTables(), which skips reasoning blocks too).
   // Must run before analysis cards are inserted: Thistle Plot result tables are not part of the Markdown
-  if (tableTools) el.querySelectorAll('table').forEach((t, i) => { if (!t.closest('details.think')) t.after(tableTools(i)); });
+  if (tableTools) {
+    let ti = 0;
+    el.querySelectorAll('table').forEach(t => { if (!t.closest('details.think')) t.after(tableTools(ti++)); });
+  }
   if (cardSlot) el.querySelectorAll('.tp-slot').forEach(s => cardSlot(+s.dataset.k, s));
   if (labSlot) el.querySelectorAll('.lab-slot:not(.pending)').forEach(s => labSlot(+s.dataset.k, s));
   return el;

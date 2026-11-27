@@ -312,5 +312,68 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(!r.error && /1200\.500/.test(r.text), 'wide two-way design preserves explicit 2 by 3 dimensions');
   r = await run({ ...wspec, dataset: 'wide.csv' }, [groups, groups]);
   ok(/Multiple loaded/.test(r.error || ''), 'duplicate filenames require unique selection');
+
+  // ---- matrix spec.control, strict num/buildG validation, Flow Long layout, and TP option matching ----
+  const bridge = await page.evaluate(async () => {
+    const { buildG, readStatsTable } = await import('./js/thistle.js');
+    const err = f => { try { return { ok: f() }; } catch (e) { return { err: e.message }; } };
+    const mxTable = { columns: ['Gene', 'T1', 'T2', 'C1', 'C2'], rows: [['G1', 10, 12, 2, 3], ['G2', '<0.1', 8, 4, 'LOD']] };
+    const mxCtrl = buildG({ test: 'rankprod', layout: 'matrix', label: 'Gene', control: 'Control', groups: { Treated: ['T1', 'T2'], Control: ['C1', 'C2'] } }, mxTable);
+    const mxBadCtrl = err(() => buildG({ test: 'rankprod', layout: 'matrix', label: 'Gene', control: 'Missing', groups: { Treated: ['T1', 'T2'], Control: ['C1', 'C2'] } }, mxTable));
+    const strictLong = buildG({ layout: 'long', group: 'G', value: 'Y' }, { columns: ['G', 'Y'], rows: [['A', 1], ['A', '   '], ['A', true], ['A', '0x10'], ['A', '0b101'], ['A', '0o10'], ['B', 2]] });
+    const a2One = err(() => buildG({ test: 'anova2', layout: 'long', group: ['A', 'B'], value: 'Y' }, { columns: ['A', 'B', 'Y'], rows: [['x', 'u', 1], ['y', 'u', 2]] }));
+    const a2Dup = err(() => buildG({ test: 'anova2', layout: 'long', group: ['A', 'A'], value: 'Y' }, { columns: ['A', 'Y'], rows: [['x', 1], ['y', 2]] }));
+    const threeFac = err(() => buildG({ test: 'anova', layout: 'long', group: ['A', 'B', 'C'], value: 'Y' }, { columns: ['A', 'B', 'C', 'Y'], rows: [['x', 'u', 'p', 1]] }));
+    const a2Ctrl = err(() => buildG({ test: 'anova2', layout: 'long', group: ['A', 'B'], value: 'Y', control: 'x · u' }, { columns: ['A', 'B', 'Y'], rows: [['x', 'u', 1], ['x', 'v', 2], ['y', 'u', 3], ['y', 'v', 4]] }));
+    const twoFacCtrl = buildG({ test: 'anova', layout: 'long', group: ['A', 'B'], value: 'Y', control: 'y · v' }, { columns: ['A', 'B', 'Y'], rows: [['x', 'u', 1], ['x', 'v', 2], ['y', 'u', 3], ['y', 'v', 4]] });
+    const allNullG = err(() => buildG({ layout: 'long', group: 'G', value: 'Y' }, { columns: ['G', 'Y'], rows: [[null, 1], [null, 2]] }));
+    const blankSubj = buildG({ test: 'ttest_rel', layout: 'long', subject: 'S', group: 'G', value: 'Y', control: 'A' }, { columns: ['S', 'G', 'Y'], rows: [['P1', 'A', 1], ['P1', 'B', 2], ['   ', 'A', 9]] });
+    const xyNull = buildG({ layout: 'xy', x: 'X', y: 'Y', label: 'L' }, { columns: ['L', 'X', 'Y'], rows: [[null, 1, 2], ['   ', 2, 4], ['Pt3', 3, 6]] });
+    const survNeg = err(() => buildG({ test: 'km', layout: 'survival', time: 'T', event: 'E', group: 'G' }, { columns: ['T', 'E', 'G'], rows: [[5, 1, 'A'], [-2, 1, 'B']] }));
+    const survTxt = err(() => buildG({ test: 'km', layout: 'survival', time: 'T', event: 'E', group: 'G' }, { columns: ['T', 'E', 'G'], rows: [[5, 1, 'A'], ['5d', 1, 'B']] }));
+    const wideNotes = buildG({ layout: 'wide', columns: ['A', 'B'] }, { columns: ['A', 'B'], rows: [[1, 'ND'], ['50%', 2]] }).notes;
+    const countsNull = buildG({ layout: 'counts', rows: 'R', cols: 'C' }, { columns: ['R', 'C'], rows: [['A', 'X'], [null, 'X'], ['B', 'Y']] }).notes;
+    const fl = document.createElement('table');
+    fl.innerHTML = '<thead><tr><th>Sample</th><th>Population</th><th>Count</th></tr></thead><tbody>' +
+      '<tr><td>S1</td><td>001</td><td data-v="10">10</td></tr><tr><td>S1</td><td>1</td><td data-v="20">20</td></tr></tbody>';
+    const flowLong = readStatsTable(fl);
+    return {
+      mxOrder: mxCtrl.G.groups.map(g => g.name), mxNotes: mxCtrl.notes, mxBadCtrl: mxBadCtrl.err,
+      strictVals: strictLong.G.groups.map(g => g.data.map(x => x[0]).filter(v => v !== '')),
+      a2One: a2One.err, a2Dup: a2Dup.err, threeFac: threeFac.err, a2Ctrl: a2Ctrl.err,
+      twoFacFirst: twoFacCtrl.G.groups[0].name, allNullG: allNullG.err,
+      blankSubj: blankSubj.G.rowNames, xyNames: xyNull.G.rowNames,
+      survNeg: survNeg.err, survTxt: survTxt.err, wideNotes, countsNull,
+      flowPops: flowLong.rows.map(r => r[1]),
+    };
+  });
+  ok(JSON.stringify(bridge.mxOrder) === '["Control","Treated"]', 'matrix: spec.control places Control first ' + JSON.stringify(bridge.mxOrder));
+  ok(bridge.mxNotes.some(n => /2 non-numeric/.test(n)), 'matrix: non-numeric cells (<0.1, LOD) are noted ' + JSON.stringify(bridge.mxNotes));
+  ok(bridge.mxBadCtrl && /Missing/.test(bridge.mxBadCtrl), 'matrix: unknown control group is refused');
+  ok(JSON.stringify(bridge.strictVals) === '[[1],[2]]', 'strict num() rejects whitespace, booleans, hex/bin/octal ' + JSON.stringify(bridge.strictVals));
+  ok(bridge.a2One && /at least 2 levels/i.test(bridge.a2One), 'anova2 long: 1-level factor is refused');
+  ok(bridge.a2Dup && /twice/i.test(bridge.a2Dup), 'anova2 long: duplicate factor column is refused');
+  ok(bridge.threeFac && /at most two/i.test(bridge.threeFac), 'long: >2 factor columns gives clear error');
+  ok(bridge.a2Ctrl && /orderA/i.test(bridge.a2Ctrl), 'anova2 long: spec.control is refused in favour of orderA/orderB');
+  ok(bridge.twoFacFirst === 'y · v', 'non-anova2 2-factor long: spec.control puts requested cell first');
+  ok(bridge.allNullG && /empty/i.test(bridge.allNullG), 'all-null long group column throws empty error (not -Infinity)');
+  ok(JSON.stringify(bridge.blankSubj) === '["P1"]', 'paired long: whitespace subject ID does not leave a ghost row');
+  ok(JSON.stringify(bridge.xyNames) === '["Point 1","Point 2","Pt3"]', 'xy: null/blank labels fall back to Point k instead of "null"');
+  ok(bridge.survNeg && /row 2/.test(bridge.survNeg) && bridge.survTxt && /row 2/.test(bridge.survTxt), 'survival: negative and non-numeric times are refused with original row numbers');
+  ok(bridge.wideNotes.some(n => /2 non-numeric/.test(n)), 'wide: non-numeric cells (ND, 50%) are noted');
+  ok(bridge.countsNull.some(n => /1 row.*missing category/i.test(n)), 'counts: null-category rows are noted');
+  ok(JSON.stringify(bridge.flowPops) === '["001","1"]', 'Flow Long layout keeps Population names 001 and 1 as text');
+
+  // TP setEl: exact option match beats substring, ASCII Holm-Bonferroni/Holm-Sidak fold Unicode, invalid inputs refused
+  const optDs = [ds('opts.csv', ['G', 'Y'], [['DrugA', 1], ['DrugA', 2], ['DrugA', 3], ['A', 10], ['A', 11], ['A', 12], ['B', 20], ['B', 21], ['B', 22]])];
+  r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Post-hoc correction': 'Holm-Bonferroni' } }, optDs);
+  ok(!r.error && /Holm/.test(r.text || ''), 'setEl: ASCII "Holm-Bonferroni" matches TP Unicode label ' + (r.error || ''));
+  r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Post-hoc correction': 'Holm-Sidak' } }, optDs);
+  ok(!r.error && /Holm/.test(r.text || ''), 'setEl: ASCII "Holm-Sidak" matches TP Unicode label ' + (r.error || ''));
+  r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Post-hoc correction': '' } }, optDs);
+  ok(r.error, 'setEl: empty string select option is refused');
+  r = await run({ test: 'mannwhitney', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Group A': 'A', 'Group B': 'B' } }, optDs);
+  ok(!r.error && /\bA\b/.test(r.text || '') && !/DrugA/.test(r.text || ''), 'setEl: exact option "A" is chosen over substring "DrugA" ' + (r.error || ''));
+
   await b.close(); process.exit(fails ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });
