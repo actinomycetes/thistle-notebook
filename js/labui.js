@@ -4,6 +4,7 @@
 import {
   SECTIONS, TYPES, TEMPLATES, STUDY_FIELDS, cur, revise, appendText, newLabNote, newEntry, isDeleted, entrySections,
   pageTitle, changeLog, fmtTime, parseLabUpdates, entryToWiki, studyToWiki, entryToHtml, entryToMarkdown,
+  isFinal, finalEvent, witnesses, sealPayload, sha256Hex, sealShort,
 } from './labnote.js';
 import { zip } from './zip.js';
 
@@ -106,17 +107,27 @@ export function createLab(ctx) {
     const meta = h('div', { class: 'lab-entry-head' },
       h('span', { class: 'badge-hdr' }, TYPES[e.type] || e.type), ' ',
       h('b', {}, pageTitle(e)), ' ',
-      h('button', { class: 'icon', title: 'Edit the title and date', onclick: () => { L.editing = 'meta'; render(); } }, '✎'));
+      isFinal(e) ? h('span', { class: 'badge-hdr campus', title: 'Finalised: locked; changes are added as amendments' }, '🔏 finalised') : h('button', { class: 'icon', title: 'Edit the title and date', onclick: () => { L.editing = 'meta'; render(); } }, '✎'));
     p.append(meta);
+    if (isFinal(e) && !isDeleted(e)) {
+      const f = finalEvent(e), w = witnesses(e);
+      p.append(h('div', { class: 'hint-box lab-final' }, `🔏 Finalised by ${f.author} on ${fmtTime(f.t)} · seal ${sealShort(f.seal)}…`,
+        w.length ? ` · ✍ witnessed by ${w.map(x => `${x.author} (${fmtTime(x.t)})`).join(', ')}` : ' · not witnessed yet', '. The entry is locked: add changes as amendments. ',
+        h('button', { class: 'btn small primary', onclick: () => amendmentDialog(e) }, '＋ Amendment'), ' ',
+        h('button', { class: 'btn small', onclick: () => checkSeal(e) }, '🔍 Check seal'),
+        ctx.userName() && ctx.userName() !== f.author && !w.some(x => x.author === ctx.userName()) ? [' ', h('button', { class: 'btn small', onclick: () => witness(e) }, '✍ Witness')] : null));
+    }
     if (isDeleted(e)) {
       const ev = [...e.events].reverse().find(x => x.what === 'deleted');
       p.append(h('div', { class: 'warn-box' }, `This entry was deleted by ${ev.author} on ${fmtTime(ev.t)}. It is kept in the record and shown read-only. `,
         h('button', { class: 'btn small primary', onclick: async () => { const who = await ctx.author(); if (!who) return; e.events.push({ t: Date.now(), author: who, what: 'restored' }); L.note.activeEntry = e.id; await save(); render(); toast('Entry restored'); } }, '↺ Restore')));
     }
-    if (L.editing === 'meta' && !isDeleted(e)) p.append(metaEditor(e));
+    if (L.editing === 'meta' && !isDeleted(e) && !isFinal(e)) p.append(metaEditor(e));
     const secs = h('div', { class: 'lab-sections' });
     for (const k of entrySections(e)) secs.append(sectionEl(e.fields[k], k, SECTIONS[k].label, SECTIONS[k].hint, e));
     p.append(secs);
+    if (e.amendments?.length) p.append(h('div', { class: 'lab-sec lab-amend' }, h('div', { class: 'lab-sec-head' }, h('b', {}, `Amendments (${e.amendments.length})`)),
+      e.amendments.map(a => h('div', { class: 'lab-rev' }, h('div', { class: 'lab-rev-head' }, h('b', {}, fmtTime(a.t)), ` · ${a.author}${a.section ? ' · ' + (SECTIONS[a.section]?.label || a.section) : ''} · reason: ${a.reason}`), renderLabMd(a.text, e.id)))));
     if (!isDeleted(e)) p.append(attachmentsEl(e), footerEl(e));
   }
 
@@ -139,7 +150,7 @@ export function createLab(ctx) {
     const box = h('div', { class: 'lab-sec', 'data-key': key });
     const editing = L.editing === key;
     box.append(h('div', { class: 'lab-sec-head' }, h('b', {}, label), h('small', { class: 'hint' }, lastRevLine(field)), h('span', { class: 'grow' }),
-      editing || (entry && isDeleted(entry)) ? null : h('button', { class: 'icon', title: 'Edit this section', onclick: () => { L.editing = key; render(); setTimeout(() => panel().querySelector(`.lab-sec[data-key="${key}"] textarea`)?.focus(), 30); } }, '✎'),
+      editing || (entry && (isDeleted(entry) || isFinal(entry))) ? null : h('button', { class: 'icon', title: 'Edit this section', onclick: () => { L.editing = key; render(); setTimeout(() => panel().querySelector(`.lab-sec[data-key="${key}"] textarea`)?.focus(), 30); } }, '✎'),
       field?.revs?.length ? h('button', { class: 'icon', title: 'All versions of this section', onclick: () => historyDialog(field, label, entry) }, '🕘') : null));
     if (editing) box.append(editorEl(field, key, entry, study));
     else {
@@ -148,7 +159,7 @@ export function createLab(ctx) {
     }
     if (key === 'protocol' && entry?.protocolsUsed?.length) box.append(h('div', { class: 'lab-protos hint' }, 'Protocols recorded: ',
       entry.protocolsUsed.map(s => h('button', { class: 'link-btn', title: 'Show the frozen copy kept in this entry', onclick: () => snapshotDialog(s) }, `📚 ${s.title} v${s.v}`)).flatMap((b, i) => (i ? [' · ', b] : [b]))));
-    if (key === 'protocol' && entry && !isDeleted(entry) && !editing) box.append(h('button', { class: 'btn small lab-proto-add', onclick: () => ctx.protocols().insertDialog(entry) }, '📚 Add a protocol'));
+    if (key === 'protocol' && entry && !isDeleted(entry) && !isFinal(entry) && !editing) box.append(h('button', { class: 'btn small lab-proto-add', onclick: () => ctx.protocols().insertDialog(entry) }, '📚 Add a protocol'));
     return box;
   }
   function editorEl(field, key, entry) {
@@ -194,6 +205,63 @@ export function createLab(ctx) {
     recordProtocol(e, snap, who); await save(); render(); toast(`${snap.title} (v${snap.v}) added to the Protocol section`);
     return true;
   }
+  // ---------- finalise, witness, seal, amendments ----------
+  async function sealOf(e) {
+    const files = await Promise.all(filesOf(e.id).map(async f => ({ name: f.name, sha256: await sha256Hex(await f.blob.arrayBuffer()) })));
+    return sha256Hex(sealPayload(e, files));
+  }
+  function finaliseDialog(e) {
+    modal(`🔏 Finalise “${pageTitle(e)}”`, h('div', {},
+      h('p', {}, 'Finalising signs the entry as complete. It is sealed with a fingerprint (SHA-256) of its sections, recorded protocols and attachments, and locked. Later changes are added as dated ', h('b', {}, 'amendments'), ' with a reason. Another person can then ', h('b', {}, 'witness'), ' it.'),
+      h('p', { class: 'hint' }, 'Finalising cannot be undone (it is part of the record), but amendments can always be added.'),
+      h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cancel'), h('button', { class: 'btn primary', onclick: async () => {
+        const who = await ctx.author(); if (!who) return;
+        const seal = await sealOf(e);
+        e.events.push({ t: Date.now(), author: who, what: 'finalised', seal }); await save(); closeModal(); render(); toast(`Finalised (seal ${sealShort(seal)}…)`);
+      } }, '🔏 Finalise'))));
+  }
+  async function witness(e) {
+    const who = await ctx.author(); if (!who) return;
+    const seal = await sealOf(e), f = finalEvent(e);
+    if (seal !== f.seal) { toast('The entry no longer matches its seal: it cannot be witnessed (🔍 Check seal)', true); return; }
+    if (!confirm(`Witness “${pageTitle(e)}” as ${who}? This records that you have read the finalised entry.`)) return;
+    e.events.push({ t: Date.now(), author: who, what: 'witnessed', seal }); await save(); render(); toast('Witnessed');
+  }
+  async function checkSeal(e) {
+    const f = finalEvent(e), now = await sealOf(e), ok = now === f.seal;
+    modal('🔍 Seal check', h('div', {},
+      h('div', { class: ok ? 'hint-box' : 'err-box' }, ok ? `✅ The entry matches the seal made when ${f.author} finalised it on ${fmtTime(f.t)}.` : `⚠ The entry does NOT match its seal (finalised by ${f.author} on ${fmtTime(f.t)}). Its content or attachments were changed outside Thistle Notebook.`),
+      h('p', { class: 'hint' }, `Seal: ${f.seal}`), ok ? null : h('p', { class: 'hint' }, `Now:  ${now}`),
+      h('p', { class: 'hint' }, 'Amendments are not part of the seal: they are added after finalising, each with its author, time and reason.')));
+  }
+  /** Amendment to a finalised entry: dated, signed, with a reason; never changes the sealed text. */
+  async function amendmentDialog(e, { section = '', text = '', onSaved = null } = {}) {
+    const sec = h('select', {}, h('option', { value: '' }, '(whole entry)'), entrySections(e).map(k => h('option', { value: k, selected: k === section }, SECTIONS[k].label)));
+    const ta = h('textarea', { class: 'lab-ta', rows: 6, placeholder: 'The correction or addition (Markdown)' }); ta.value = text;
+    const why = h('input', { type: 'text', placeholder: 'Reason, e.g. transcription error in zone size for plate B' });
+    modal(`＋ Amendment to “${pageTitle(e)}”`, h('div', {},
+      h('div', { class: 'form-grid' }, h('label', {}, 'Section'), sec, h('label', {}, 'Reason'), why), ta,
+      h('p', { class: 'hint' }, 'The finalised text stays as it was; the amendment is added below it with your name, the time and the reason.'),
+      h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cancel'), h('button', { class: 'btn primary', onclick: async () => {
+        if (!ta.value.trim()) { ta.focus(); return; }
+        if (!why.value.trim()) { why.focus(); return toast('Give a reason for the amendment', true); }
+        const who = await ctx.author(); if (!who) return;
+        (e.amendments ||= []).push({ t: Date.now(), author: who, section: sec.value, text: ta.value.trim(), reason: why.value.trim() });
+        e.events.push({ t: Date.now(), author: who, what: 'amendment added' });
+        await save(); closeModal(); render(); toast('Amendment added');
+        if (onSaved) await onSaved();
+      } }, 'Add amendment'))));
+    setTimeout(() => (text ? why : ta).focus(), 50);
+    return true;
+  }
+  async function wordExport(e) {
+    const images = new Map();
+    for (const f of filesOf(e.id)) if (/^image\/(png|jpe?g|gif|bmp)$/.test(f.type)) {
+      let w = 600, hgt = 400; try { const b = await createImageBitmap(f.blob); w = b.width; hgt = b.height; b.close?.(); } catch { }
+      images.set(f.name, { data: new Uint8Array(await f.blob.arrayBuffer()), type: f.type, w, h: hgt });
+    }
+    saveBlob(ctx.markdownToDocx(entryToMarkdown(e), '', { images }), `${safeName(pageTitle(e))}.docx`);
+  }
   function snapshotDialog(s) {
     modal(`📚 ${s.title} — version ${s.v} (as recorded)`, h('div', {},
       h('p', { class: 'hint' }, `Recorded by ${s.author} on ${fmtTime(s.t)} from ${s.owner}'s protocol${s.wiki ? ' · wiki page ' + s.wiki : ''}. This copy does not change when the protocol is edited later.`),
@@ -215,21 +283,22 @@ export function createLab(ctx) {
   const viaLabel = v => ({ edit: 'edited', chat: 'from chat', restore: 'restored', created: 'created', add: 'added from chat/analysis', protocol: 'protocol inserted' }[v] || v || '');
 
   function attachmentsEl(e) {
-    const fs = filesOf(e.id);
+    const fs = filesOf(e.id), locked = isFinal(e);
     const zone = h('div', { class: 'lab-att', title: 'Drop files here to attach them to this entry' },
       h('div', { class: 'lab-sec-head' }, h('b', {}, `Attachments (${fs.length})`), h('span', { class: 'grow' }),
-        h('button', { class: 'btn small', onclick: async () => { const files = await ctx.pickFiles({ multiple: true }); if (files.length) await addAttachments(e, files); } }, '＋ Attach files')),
+        locked ? h('span', { class: 'hint' }, 'sealed with the entry') : h('button', { class: 'btn small', onclick: async () => { const files = await ctx.pickFiles({ multiple: true }); if (files.length) await addAttachments(e, files); } }, '＋ Attach files')),
       fs.length ? h('ul', { class: 'lab-att-list' }, fs.map(f => h('li', {},
         /^image\//.test(f.type) ? h('img', { src: fileUrl(f), alt: '', class: 'lab-thumb' }) : h('span', { class: 'lab-file-ico' }, '📎'),
         h('a', { href: fileUrl(f), download: f.name, title: 'Download' }, f.name),
         h('small', { class: 'hint' }, ` ${ctx.fmtBytes(f.size)} · ${f.author}, ${fmtTime(f.t)}`),
         h('span', { class: 'grow' }),
-        h('button', { class: 'icon', title: 'Remove from this entry (kept in the record; shown in the change log)', onclick: async () => {
+        locked ? null : h('button', { class: 'icon', title: 'Remove from this entry (kept in the record; shown in the change log)', onclick: async () => {
           if (!confirm(`Remove “${f.name}” from this entry? It stays in the notebook's record and the change log.`)) return;
           const who = await ctx.author(); if (!who) return;
           (f.events ||= []).push({ t: Date.now(), author: who, what: 'deleted' }); await db.put('files', f);
           (e.events ||= []).push({ t: Date.now(), author: who, what: 'attachment removed', name: f.name }); await save(); render();
         } }, '🗑')))) : h('div', { class: 'lab-hint' }, 'Drop files here (images, data, gels, plots…) or use ＋ Attach files. Refer to them in a section with 📎 Attachment ▾.'));
+    if (locked) return zone;
     zone.addEventListener('dragover', ev => { ev.preventDefault(); ev.stopPropagation(); zone.classList.add('drop'); });
     zone.addEventListener('dragleave', () => zone.classList.remove('drop'));
     zone.addEventListener('drop', async ev => { ev.preventDefault(); ev.stopPropagation(); zone.classList.remove('drop'); document.body.classList.remove('dragging'); if (ev.dataTransfer.files.length) await addAttachments(e, [...ev.dataTransfer.files]); });
@@ -276,6 +345,9 @@ export function createLab(ctx) {
       })),
       item('🕘 Change log of this entry', () => changeLogDialog(e)),
       item('⤓ Markdown of this entry', () => saveText(entryToMarkdown(e), `${safeName(pageTitle(e))}.md`, 'text/markdown')),
+      item('⤓ Word (.docx) with figures', () => wordExport(e)),
+      !isFinal(e) && !isDeleted(e) ? item('🔏 Finalise this entry…', () => finaliseDialog(e)) : null,
+      isFinal(e) ? item('🔍 Check seal', () => checkSeal(e)) : null,
       item('🗑 Delete this entry (kept in the record)', async () => {
         if (!confirm(`Delete “${pageTitle(e)}”? It is hidden but kept in the record and can be restored.`)) return;
         const who = await ctx.author(); if (!who) return;
@@ -358,11 +430,11 @@ export function createLab(ctx) {
     return {
       study: { title: f ? cur(f.title) : ctx.nb()?.name, purpose: f ? cur(f.purpose) : '' },
       entry: e ? { title: cur(e.fields.title), date: cur(e.fields.date), type: e.type, sections: Object.fromEntries(entrySections(e).map(k => [k, cur(e.fields[k])])) } : null,
-      protocolsUsed: e?.protocolsUsed || [], library: ctx.protocols().promptList(),
+      protocolsUsed: e?.protocolsUsed || [], library: ctx.protocols().promptList(), final: e ? isFinal(e) : false,
       sectionLabels: Object.fromEntries(Object.entries(SECTIONS).map(([k, v]) => [k, v.label])),
     };
   }
-  const statusText = st => st ? ({ accepted: `accepted by ${st.author}`, edited: `edited and accepted by ${st.author}`, auto: `applied automatically (${st.author})`, rejected: `rejected by ${st.author}` }[st.status] + `, ${fmtTime(st.t)}`) : 'proposed';
+  const statusText = st => st ? ({ amended: `added as an amendment by ${st.author}`, accepted: `accepted by ${st.author}`, edited: `edited and accepted by ${st.author}`, auto: `applied automatically (${st.author})`, rejected: `rejected by ${st.author}` }[st.status] + `, ${fmtTime(st.t)}`) : 'proposed';
   /** Card for the k-th ```lab-note block of a chat message. */
   function card(m, k) {
     const p = parseLabUpdates(m.content)[k], box = h('div', { class: 'lab-card' });
@@ -406,6 +478,10 @@ export function createLab(ctx) {
     else {
       e = entryById(m.meta?.labEntry) || activeEntry();
       if (!e || isDeleted(e)) { toast('Create an assay entry first (＋ New assay in the Lab note pane)', true); return false; }
+      if (isFinal(e)) {
+        if (how === 'auto') { toast(`“${pageTitle(e)}” is finalised: accept the chat update as an amendment`, true); return false; }
+        return amendmentDialog(e, { section: u.section, text, onSaved: async () => { (m.meta.lab ||= {})[k] = { status: 'amended', t: Date.now(), author: who, entry: e.id, section: u.section }; await ctx.saveMessage(m); ctx.rerenderMessage(m); } });
+      }
       field = e.fields[u.section];
     }
     const next = u.op === 'append' ? appendText(cur(field), text) : text;

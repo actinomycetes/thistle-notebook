@@ -131,7 +131,7 @@ export function labProtocol(ctx) {
 ## Lab note
 The notebook follows the ISA model used by the lab's wiki (Wikibench): this notebook is one Study; each entry is one Assay page.
 Study: ${ctx.study.title || '(untitled)'}${ctx.study.purpose ? `\nPurpose: ${ctx.study.purpose.slice(0, 1500)}` : ''}
-Current entry: ${ctx.entry ? `${ctx.entry.date} Assay ${ctx.entry.title} (${ctx.entry.type})` : 'none — ask the user to create one with ＋ New assay'}
+Current entry: ${ctx.entry ? `${ctx.entry.date} Assay ${ctx.entry.title} (${ctx.entry.type})` : 'none — ask the user to create one with ＋ New assay'}${ctx.final ? '\nThis entry is FINALISED (locked). Propose changes as usual; the user adds each one as a dated amendment with a reason, so say briefly why each change is needed.' : ''}
 Now: ${ctx.now}. The user writing is ${ctx.author || 'the scientist'}.
 
 Current text of the entry's sections:

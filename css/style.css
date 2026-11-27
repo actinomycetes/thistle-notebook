@@ -282,3 +282,9 @@ body.resizing iframe { pointer-events: none; }
 .proto-pick { list-style: none; padding: 0; margin: 0; max-height: 50vh; overflow: auto; }
 .lab-protos { margin-top: 4px; }
 .lab-proto-add { margin-top: 4px; }
+
+/* ---------- v0.9: finalised entries, amendments ---------- */
+.lab-final { line-height: 1.8; }
+.lab-amend { border-color: var(--warn-tx); }
+.proto-folders { border-bottom: 1px solid var(--border); padding-bottom: 6px; }
+.proto-folders .warn-box { margin: 0; padding: 2px 8px; }

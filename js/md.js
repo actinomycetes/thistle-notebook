@@ -60,7 +60,13 @@ function runs(tokens, fmt = {}) {
     if (t.type === 'strong') out += runs(t.tokens, { ...fmt, b: 1 });
     else if (t.type === 'em') out += runs(t.tokens, { ...fmt, i: 1 });
     else if (t.type === 'codespan') out += run(t.text, { ...fmt, code: 1 });
-    else if (t.type === 'link') out += runs(t.tokens, { ...fmt, u: 1 }) + run(` (${t.href})`, fmt);
+    else if (t.type === 'link') {
+      const href = t.href || '';
+      if (href.startsWith('attachment:')) out += runs(t.tokens, fmt) + run(` (attachment ${decodeURIComponent(href.slice(11))})`, { ...fmt, i: 1 });
+      else if (href.startsWith('wiki:')) out += runs(t.tokens, { ...fmt, u: 1 }) + run(` (wiki page: ${decodeURIComponent(href.slice(5))})`, fmt);
+      else out += runs(t.tokens, { ...fmt, u: 1 }) + run(` (${href})`, fmt);
+    }
+    else if (t.type === 'image') out += image(t, fmt);
     else if (t.type === 'br') out += '<w:r><w:br/></w:r>';
     else if (t.tokens) out += runs(t.tokens, fmt);
     else out += run(decode(t.text ?? t.raw ?? ''), fmt);
@@ -71,6 +77,20 @@ const decode = s => { const d = document.createElement('textarea'); d.innerHTML 
 function run(text, f) {
   const pr = (f.b ? '<w:b/>' : '') + (f.i ? '<w:i/>' : '') + (f.u ? '<w:u w:val="single"/>' : '') + (f.code ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>' : '');
   return `<w:r>${pr ? `<w:rPr>${pr}</w:rPr>` : ''}<w:t xml:space="preserve">${X(text)}</w:t></w:r>`;
+}
+// Embedded pictures (v0.9): attachment images in lab-note entries. IMGS is set per document by markdownToDocx.
+let IMGS = { map: new Map(), used: [] };
+function image(t, fmt) {
+  const href = t.href || '', name = href.startsWith('attachment:') ? decodeURIComponent(href.slice(11)) : null, img = name && IMGS.map.get(name);
+  if (!img) return run(`[image: ${t.text || name || href}]`, { ...fmt, i: 1 });
+  let k = IMGS.used.findIndex(u => u.name === name);
+  if (k < 0) { IMGS.used.push({ name, ...img }); k = IMGS.used.length - 1; }
+  const maxW = PAGE_W * 635, emuW = Math.min(maxW, Math.round((img.w || 600) * 9525)), emuH = Math.round(emuW * ((img.h || 400) / (img.w || 600)));
+  const id = 100 + IMGS.drawings++;
+  return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${emuW}" cy="${emuH}"/><wp:docPr id="${id}" name="${X(name)}" descr="${X(t.text || name)}"/>`
+    + `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">`
+    + `<pic:nvPicPr><pic:cNvPr id="${id}" name="${X(name)}"/><pic:cNvPicPr/></pic:nvPicPr><pic:blipFill><a:blip r:embed="rIdImg${k + 1}"/><a:stretch><a:fillRect/></a:stretch></pic:blipFill>`
+    + `<pic:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="${emuW}" cy="${emuH}"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></pic:spPr></pic:pic></a:graphicData></a:graphic></wp:inline></w:drawing></w:r>`;
 }
 const para = (inner, style) => `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ''}${inner}</w:p>`;
 
@@ -102,21 +122,28 @@ function blocks(tokens, depth = 0) {
   return out;
 }
 
-export function markdownToDocx(md, title = '') {
-  const tokens = window.marked.lexer(String(md).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, ''));
+/** images: Map of attachment name → {data: Uint8Array, type, w, h} (pixels), for ![caption](attachment:name) */
+export function markdownToDocx(md, title = '', { images = new Map() } = {}) {
+  IMGS = { map: images, used: [], drawings: 0 };
+  const src = String(md).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/\]\((attachment|wiki):([^)\n]+)\)/g, (_, k, t) => `](${k}:${encodeURIComponent(t.trim().replace(/^<|>$/g, ''))})`);
+  const tokens = window.marked.lexer(src, { gfm: true, breaks: true });
   // Wide tables (more than 5 columns) get landscape pages
   const wide = tokens.some(function f(t) { return (t.type === 'table' && t.header.length > 5) || (t.tokens || t.items || []).some(f); });
   PAGE_W = wide ? 14570 : 9638;
   const body = (title ? para(run(title, {}), 'Title') : '') + blocks(tokens);
   const pg = wide ? '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>' : '<w:pgSz w:w="11906" w:h="16838"/>';
-  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:body>${body}<w:sectPr>${pg}<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
+  const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${body}<w:sectPr>${pg}<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
   const st = (id, name, sz, extra = '') => `<w:style w:type="paragraph" w:styleId="${id}"><w:name w:val="${name}"/><w:basedOn w:val="Normal"/><w:next w:val="Normal"/><w:pPr><w:spacing w:before="240" w:after="80"/>${extra}</w:pPr><w:rPr><w:b/><w:sz w:val="${sz}"/></w:rPr></w:style>`;
   const styles = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:styles xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main"><w:docDefaults><w:rPrDefault><w:rPr><w:rFonts w:ascii="Calibri" w:hAnsi="Calibri" w:cs="Calibri"/><w:sz w:val="22"/></w:rPr></w:rPrDefault><w:pPrDefault><w:pPr><w:spacing w:after="120" w:line="276" w:lineRule="auto"/></w:pPr></w:pPrDefault></w:docDefaults><w:style w:type="paragraph" w:default="1" w:styleId="Normal"><w:name w:val="Normal"/></w:style>${st('Title', 'Title', 36)}${st('Heading1', 'heading 1', 32)}${st('Heading2', 'heading 2', 28)}${st('Heading3', 'heading 3', 24)}${st('Heading4', 'heading 4', 22)}<w:style w:type="paragraph" w:styleId="TableText"><w:name w:val="Table Text"/><w:basedOn w:val="Normal"/><w:pPr><w:spacing w:after="0" w:line="240" w:lineRule="auto"/></w:pPr><w:rPr><w:sz w:val="18"/></w:rPr></w:style><w:style w:type="paragraph" w:styleId="Code"><w:name w:val="Code"/><w:pPr><w:spacing w:after="0"/></w:pPr><w:rPr><w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/><w:sz w:val="18"/></w:rPr></w:style></w:styles>`;
+  const ext = t => ({ 'image/png': 'png', 'image/jpeg': 'jpeg', 'image/gif': 'gif', 'image/bmp': 'bmp' }[t] || 'png');
+  const media = IMGS.used.map((u, i) => ({ name: `word/media/image${i + 1}.${ext(u.type)}`, data: u.data, rel: `<Relationship Id="rIdImg${i + 1}" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="media/image${i + 1}.${ext(u.type)}"/>` }));
+  const defaults = [...new Set(IMGS.used.map(u => ext(u.type)))].map(e => `<Default Extension="${e}" ContentType="image/${e}"/>`).join('');
   return zip([
-    { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/><Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>' },
+    { name: '[Content_Types].xml', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types"><Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/><Default Extension="xml" ContentType="application/xml"/>' + defaults + '<Override PartName="/word/document.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.document.main+xml"/><Override PartName="/word/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml"/></Types>' },
     { name: '_rels/.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="word/document.xml"/></Relationships>' },
-    { name: 'word/_rels/document.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/></Relationships>' },
+    { name: 'word/_rels/document.xml.rels', data: '<?xml version="1.0" encoding="UTF-8" standalone="yes"?><Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships"><Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/styles" Target="styles.xml"/>' + media.map(m => m.rel).join('') + '</Relationships>' },
     { name: 'word/document.xml', data: doc },
     { name: 'word/styles.xml', data: styles },
+    ...media.map(m => ({ name: m.name, data: m.data })),
   ]);
 }

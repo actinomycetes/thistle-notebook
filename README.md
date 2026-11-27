@@ -3,7 +3,7 @@
 Part of the Thistle suite, together with [Thistle Plot](https://github.com/actinomycetes/thistle-plot) (TP) and
 [Thistle Flow](https://github.com/actinomycetes/thistle-flow) (TF).
 
-**Status:** beta (0.x; current v0.8.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
+**Status:** beta (0.x; current v0.9.0). AI output can be wrong: check what matters, and treat suggested marks as suggestions.
 
 A research notebook that answers from your own sources, similar in spirit to NotebookLM. It runs in your browser and uses
 the University of Edinburgh's **ELM API** for its models. Add papers, rubrics and answers, datasets, drafts, images or
@@ -88,6 +88,16 @@ Confluence template (ISA: Investigation → Study → Assay).
 
   **Copy as formatted text** is the alternative: paste straight into the page body, without attachment links.
   `examples/wikibench/` has a ready-made paste test of the Wikibench example assay.
+- **🔏 Finalising** (v0.9, ⋯ → Finalise this entry).
+  - **Seal.** Signs the entry as complete and seals it with a SHA-256 fingerprint of its sections, recorded
+    protocols and attachments.
+  - **Locked afterwards.** The entry can no longer be edited. Changes, including chat updates, are added as dated
+    **amendments** with a reason, below the sealed text.
+  - **✍ Witness.** Another user can countersign. **🔍 Check seal** shows whether the entry still matches its seal,
+    which detects changes made outside the app.
+  - **Exports.** The wiki markup and Word export include the amendments and the finalisation line.
+- **⤓ Word (.docx) with figures** (⋯ menu): the entry as a Word document with its attachment images embedded, e.g. for
+  Confluence's Word import or for printing.
 - **Saving.** Lab notes and attachments are saved in the `.tnote` file (format 3) with every version.
 - **📚 Protocol library** (v0.8), shared by all notebooks in this browser. Each protocol has an owner (a user),
   a title, its wiki page title, tags and Markdown steps.
@@ -103,6 +113,15 @@ Confluence template (ISA: Investigation → Study → Assay).
     your private ones only if you tick that. **📂 Open library** adds a colleague's file; protocols you already have gain
     their new versions, and nothing is removed or overwritten.
   - **📋 Copy for wiki** gives a protocol's wiki markup for a page under *Protocols*.
+- **📁 Protocol folders** (v0.9). Keep the library on a drive, e.g. the University shared drive (DataStore). Choose a
+  **lab folder** for public protocols and a **private folder** for each user (📚 Protocols → 📁 Folders…, or Settings).
+  - **Files.** One file per protocol (`Title [id].tnote`). Saving reads the file first and merges, so two people editing
+    the same protocol both keep their versions. Thistle Notebook never deletes files; Disconnect only forgets the folder.
+  - **Sync.** Opening the library, or **↻ Sync**, brings in new protocols and colleagues' versions from the folders.
+  - **Browsers.** Chrome and Edge keep the folders connected (after a restart, one click on **🔌 Reconnect**). Safari and
+    Firefox cannot: they read a folder once per session, and each protocol has **⤓ Download file** to put into the
+    folder by hand.
+  - **Privacy.** Files are read and written on that drive by the browser; nothing is uploaded.
 - **Using a protocol in an entry.** **📚 Add a protocol** under the Protocol section, or **📚 Protocol…** while
   editing, inserts `Followed [title](wiki:page) (protocol version n).` and your **deviations**.
   - The steps are copied in too when the protocol has no wiki page (optional otherwise).
@@ -218,6 +237,10 @@ confidential details in a query, and on-campus-only notebooks remind you to chec
   delete / restore, import from files, pasted text or sources, library files that merge without removing anything, copy
   for the wiki; protocols inserted into entries with deviations and a frozen copy of the version used. The wiki markup
   no longer adds the attachments macro (Wikibench templates do; optional in Settings).
+- **v0.9.0:** 📁 protocol folders (lab folder for public protocols, private folder per user; one file per protocol,
+  merged on save, never deleted; Chrome / Edge keep them connected); 🔏 finalising entries with a SHA-256 seal, ✍
+  witnessing by a second user, dated amendments with a reason, and a seal check; Word export of an entry with its
+  figures embedded.
 - **Thistle Flow**: in 🔬 Thistle apps → Thistle Flow, load FCS files and gate as usual, then **⬇ Add TF statistics as
   source**. The population statistics become a dataset the assistant can analyse and send on to Thistle Plot. `.tflow`
   files can also be added as sources (gating hierarchy and samples).
@@ -246,18 +269,23 @@ npm test                                          # no web server needed (tests/
 chat with citations and web search, a Thistle Plot ANOVA (values checked against the CSV), marking, Word/Excel/CSV/HTML
 exports (file structure checked),
 `.tnote` round trip, the on-campus restrictions, and the rule that no other host can be contacted.
-`tests/labnote.e2e.cjs` covers the lab note and the Wikibench export, `tests/protocols.e2e.cjs` the protocol library.
+`tests/labnote.e2e.cjs` covers the lab note and the Wikibench export, `tests/protocols.e2e.cjs` the protocol library,
+`tests/eln.e2e.cjs` protocol folders, finalising (seal, witness, amendments) and Word export with figures.
 `tests/workspace.e2e.cjs` covers source tabs, deleting, re-running and recalling questions, finding moved files,
 resizable panes and closing notebooks. `tests/layouts.e2e.cjs` runs each table layout through the real Thistle Plot; results agree with SciPy (paired t,
 Fisher, Pearson, ANOVA).
 
-## Known limitations of v0.8.0
+## Known limitations of v0.9.0
 - The wiki export has not yet been tried on wiki.ed.ac.uk (see `examples/wikibench/README.md`). Nothing can be
   published to the wiki directly: the wiki does not accept requests from browser apps hosted elsewhere, so the route is
   copy and paste.
 - Attachments are stored inside `.tnote` files (base64), so large images make large files.
-- The protocol library lives in this browser. Share it as a library file, and save one as a backup: clearing site
-  data deletes it. A notebook's `.tnote` carries only the frozen copies of the protocols its entries used.
+- Without connected folders the protocol library lives only in this browser: connect folders, or save a library file
+  as a backup (clearing site data deletes it). A notebook's `.tnote` carries only the frozen copies of the protocols
+  its entries used.
+- Folders stay connected only in Chrome and Edge; Safari and Firefox read a folder each session, and saving into it is
+  by download.
+- The seal shows whether an entry changed after finalising; it is not a qualified electronic signature.
 - Not yet tried against the live ELM API with a real key (built from ELM's OpenAPI spec and help page). Things to
   check first: embeddings with the on-campus model and reasoning output from Qwen. Web search is refused by ELM (see above).
 - ELM's error replies cannot be read by browsers. When ELM refuses a chat request, the app retries once without optional

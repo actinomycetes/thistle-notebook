@@ -52,11 +52,38 @@ export const isDeleted = e => { const ev = (e.events || []).filter(x => x.what =
 export const entrySections = e => { const base = TEMPLATES[e.type] || TEMPLATES.wet; return Object.keys(SECTIONS).filter(k => base.includes(k) || cur(e.fields[k]).trim()); };
 export const pageTitle = e => `${cur(e.fields.date)} Assay ${cur(e.fields.title)}`.trim();
 
+// ---------- finalising (v0.9): a seal over the content, witnesses, and amendments afterwards ----------
+// Finalising records an event with a SHA-256 seal of the entry's current content (sections, protocols recorded,
+// attachment fingerprints). The entry is then locked: changes are added as dated amendments with a reason.
+// A second person can witness (countersign) it. "Check seal" recomputes the seal and compares.
+export const finalEvent = e => [...(e.events || [])].reverse().find(x => x.what === 'finalised') || null;
+export const isFinal = e => !!finalEvent(e);
+export const witnesses = e => (e.events || []).filter(x => x.what === 'witnessed');
+export function sealPayload(e, files = []) {
+  const sections = {};
+  for (const k of Object.keys(e.fields || {})) sections[k] = cur(e.fields[k]);
+  return JSON.stringify({ type: e.type, sections, protocols: (e.protocolsUsed || []).map(p => ({ pid: p.pid, v: p.v, title: p.title, body: p.body })),
+    files: [...files].sort((a, b) => a.name.localeCompare(b.name)).map(f => [f.name, f.sha256]) });
+}
+export async function sha256Hex(data) {
+  const buf = typeof data === 'string' ? new TextEncoder().encode(data) : data;
+  return [...new Uint8Array(await crypto.subtle.digest('SHA-256', buf))].map(b => b.toString(16).padStart(2, '0')).join('');
+}
+const SEAL_SHOW = 16;
+export const sealShort = s => (s ? s.slice(0, SEAL_SHOW) : '');
+function finalLine(e) {
+  const f = finalEvent(e); if (!f) return '';
+  const w = witnesses(e).map(x => `${x.author} (${fmtTime(x.t)})`).join(', ');
+  return `Finalised by ${f.author} on ${fmtTime(f.t)} (seal SHA-256 ${sealShort(f.seal)}…)${w ? `; witnessed by ${w}` : ''}.`;
+}
+const amendLines = e => (e.amendments || []).map(a => ({ head: `${fmtTime(a.t)} — ${a.author}${a.section ? ` (${SECTIONS[a.section]?.label || a.section})` : ''}`, reason: a.reason, text: a.text }));
+
 /** All changes to an entry (or the study) as one time-ordered log: [{t, author, what, field, via, text}] */
 export function changeLog(obj, labels = {}) {
   const out = [];
   for (const [k, f] of Object.entries(obj.fields || {})) (f.revs || []).forEach((r, i) => out.push({ t: r.t, author: r.author, field: k, label: labels[k] || SECTIONS[k]?.label || STUDY_FIELDS[k]?.label || k, what: i === 0 ? 'wrote' : 'changed', via: r.via, note: r.note || '', text: r.text }));
-  for (const ev of obj.events || []) out.push({ t: ev.t, author: ev.author, field: '', label: '', what: ev.what + (ev.type ? ` (${TYPES[ev.type] || ev.type})` : '') + (ev.name ? `: ${ev.name}` : ''), via: '', note: ev.note || '', text: '' });
+  for (const ev of obj.events || []) out.push({ t: ev.t, author: ev.author, field: '', label: '', what: ev.what + (ev.type ? ` (${TYPES[ev.type] || ev.type})` : '') + (ev.name ? `: ${ev.name}` : '') + (ev.seal ? ` (seal ${sealShort(ev.seal)}…)` : ''), via: '', note: ev.note || '', text: '' });
+  for (const a of obj.amendments || []) out.push({ t: a.t, author: a.author, field: a.section || '', label: SECTIONS[a.section]?.label || '', what: 'amendment', via: '', note: a.reason, text: a.text });
   return out.sort((a, b) => a.t - b.t);
 }
 export function contributors(e) {
@@ -170,6 +197,8 @@ export function entryToWiki(e, { footer = true, imageWidth = 450, attachmentsMac
     const md = cur(e.fields[k]).trim(); if (!md) continue;
     parts.push((SECTIONS[k].noHeading ? '' : `h3. ${SECTIONS[k].label}\n\n`) + mdToWiki(md, ctx));
   }
+  const am = amendLines(e);
+  if (am.length) parts.push('h3. Amendments\n\n' + am.map(a => `*${wikiEsc(a.head)}* — reason: ${wikiEsc(a.reason)}\n${mdToWiki(a.text, ctx)}`).join('\n\n'));
   if (attachmentsMacro) parts.push('h3. Attachments\n\n{attachments}');
   if (footer) parts.push(provenance(e, s => `_${wikiEsc(s)}_`));
   return { title: pageTitle(e), markup: parts.join('\n\n') + '\n', files: [...ctx.files] };
@@ -182,8 +211,8 @@ export function studyToWiki(note, { footer = true } = {}) {
   return { title: cur(f.title), markup: parts.join('\n\n') + '\n' };
 }
 function provenance(e, wrap) {
-  const who = contributors(e).map(([a]) => a).join(', '), last = lastChange(e);
-  return wrap(`Written with Thistle Notebook${who ? ' by ' + who : ''}; last change ${fmtTime(last)}. The full change history is kept in the notebook file (.tnote).`);
+  const who = contributors(e).map(([a]) => a).join(', '), last = lastChange(e), fin = finalLine(e);
+  return wrap(`Written with Thistle Notebook${who ? ' by ' + who : ''}; last change ${fmtTime(last)}.${fin ? ' ' + fin : ''} The full change history is kept in the notebook file (.tnote).`);
 }
 export const fmtTime = t => { const d = new Date(t), p = n => String(n).padStart(2, '0'); return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}`; };
 
@@ -196,6 +225,8 @@ export function entryToHtml(e, { wikiUrl = () => null, footer = true } = {}) {
     const md = cur(e.fields[k]).trim(); if (!md) continue;
     parts.push((SECTIONS[k].noHeading ? '' : `<h3>${escH(SECTIONS[k].label)}</h3>`) + mdToHtml(md, wikiUrl));
   }
+  const am = amendLines(e);
+  if (am.length) parts.push('<h3>Amendments</h3>' + am.map(a => `<p><strong>${escH(a.head)}</strong> — reason: ${escH(a.reason)}</p>${mdToHtml(a.text, wikiUrl)}`).join(''));
   if (footer) parts.push(provenance(e, s => `<p><em>${escH(s)}</em></p>`));
   return parts.join('\n');
 }
@@ -212,5 +243,8 @@ const escH = s => String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;'
 export function entryToMarkdown(e) {
   const out = [`# ${pageTitle(e)}`, `_${TYPES[e.type] || e.type}_`];
   for (const k of entrySections(e)) { const md = cur(e.fields[k]).trim(); if (md) out.push(`## ${SECTIONS[k].label}\n\n${md}`); }
+  const am = amendLines(e);
+  if (am.length) out.push('## Amendments\n\n' + am.map(a => `**${a.head}** — reason: ${a.reason}\n\n${a.text}`).join('\n\n'));
+  out.push(provenance(e, s => `_${s}_`));
   return out.join('\n\n') + '\n';
 }

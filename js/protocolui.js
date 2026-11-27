@@ -5,13 +5,86 @@ import {
   libraryFile, mergeLibrary,
 } from './protocols.js';
 import { mdToWiki, fmtTime } from './labnote.js';
+import { canKeepFolders, protocolFileName, protocolFile, protocolsInFile } from './folders.js';
 
 export function createProtocols(ctx) {
   const { h, $, db, toast, modal, closeModal, saveText } = ctx;
-  const P = { all: [], filter: 'visible', q: '' };
+  const P = { all: [], filter: 'visible', q: '', pending: new Set(), where: {} };
   const me = () => ctx.userId();
-  async function load() { P.all = await db.all('protocols'); return P.all; }
-  async function store(p) { await db.put('protocols', p); const i = P.all.findIndex(x => x.id === p.id); if (i >= 0) P.all[i] = p; else P.all.push(p); }
+  const F = ctx.folders;
+  async function load({ sync = true } = {}) { P.all = await db.all('protocols'); if (sync) await syncIn({ quiet: true }); return P.all; }
+  async function put(p) { await db.put('protocols', p); const i = P.all.findIndex(x => x.id === p.id); if (i >= 0) P.all[i] = p; else P.all.push(p); }
+  async function store(p) { await put(p); await syncOut(p); }
+
+  // ---------- folders: public protocols → lab folder; private → the owner's private folder ----------
+  const folderOf = p => (p.visibility === 'public' ? ['lab', null] : ['private', p.owner]);
+  /** Write a protocol to its folder: read the file there first and merge, so nobody's versions are lost. */
+  async function syncOut(p) {
+    const [which, owner] = folderOf(p);
+    if (which === 'private' && owner !== me()) return 'skip';
+    const dir = await F.ready(which, owner);
+    if (!dir) { if ((await F.status(which, owner)).state !== 'none') P.pending.add(p.id); return 'pending'; }
+    try {
+      const name = protocolFileName(p), onDisk = await F.readFile(dir, name);
+      let out = p;
+      if (onDisk && onDisk.id === p.id) {
+        out = mergeLibrary([onDisk], [p]).merged[0] || onDisk;          // the file gains our new versions
+        const back = mergeLibrary([p], [out]).merged[0];                  // and we gain the file's (another person's)
+        if (back) { await put(back); }
+      }
+      await F.writeFile(dir, name, protocolFile(out));
+      P.pending.delete(p.id); P.where[p.id] = which;
+      return 'ok';
+    } catch (e) { P.pending.add(p.id); toast(`Could not write “${curV(p).title}” to the ${which === 'lab' ? 'lab' : 'private'} folder: ${e.message}`, true); return 'error'; }
+  }
+  /** Read both folders and merge what is there (new protocols, other people's versions). */
+  async function syncIn({ quiet = false } = {}) {
+    let added = 0, updated = 0;
+    for (const [which, owner] of [['lab', null], ['private', me()]]) {
+      const dir = await F.ready(which, owner); if (!dir) continue;
+      const found = await F.readAll(dir);
+      found.forEach(p => (P.where[p.id] = which));
+      const r = mergeLibrary(P.all, found);
+      for (const p of r.merged) await put(p);
+      added += r.added; updated += r.updated;
+    }
+    for (const id of [...P.pending]) { const p = P.all.find(x => x.id === id); if (p) await syncOut(p); }
+    if (!quiet || added || updated) toast(`Folders read: ${added} new, ${updated} updated protocol(s)`);
+    return { added, updated };
+  }
+  async function folderLine() {
+    const lab = await F.status('lab'), mine = await F.status('private', me());
+    const txt = (s, label) => s.state === 'ok' ? `📁 ${label}: ${s.name}` : s.state === 'none' ? `📁 ${label}: not set` : `📁 ${label}: ${s.name} (needs permission)`;
+    return h('div', { class: 'proto-tools proto-folders' },
+      h('span', { class: 'hint' }, `${txt(lab, 'Lab folder')} · ${txt(mine, 'My private folder')}`),
+      P.pending.size ? h('span', { class: 'warn-box' }, `${P.pending.size} protocol(s) not yet written to a folder`) : null,
+      h('span', { class: 'grow' }),
+      (lab.state === 'ok' || mine.state === 'ok') ? h('button', { class: 'btn small', title: 'Read the folders again (new protocols and other people\'s versions)', onclick: async () => { await syncIn(); openLibrary(); } }, '↻ Sync') : null,
+      h('button', { class: 'btn small' + (lab.state === 'prompt' || mine.state === 'prompt' ? ' primary' : ''), onclick: () => foldersDialog() }, lab.state === 'prompt' || mine.state === 'prompt' ? '🔌 Reconnect folders' : '📁 Folders…'));
+  }
+  async function foldersDialog() {
+    const body = h('div');
+    const draw = async () => {
+      const rows = [];
+      for (const [which, owner, label, hint] of [['lab', null, 'Lab folder (public protocols)', 'A folder everyone in the lab can reach, e.g. on the University shared drive (DataStore).'], ['private', me(), `Private folder of ${ctx.userName() || 'this user'}`, 'Your own folder, e.g. in your University home drive.']]) {
+        const s = await F.status(which, owner);
+        rows.push(h('tr', {}, h('td', {}, h('b', {}, label), h('div', { class: 'hint' }, hint)),
+          h('td', {}, s.state === 'ok' ? `✅ ${s.name}` : s.state === 'none' ? 'not set' : `⚠ ${s.name}: access needs to be granted again`),
+          h('td', {},
+            canKeepFolders() ? h('button', { class: 'btn small', onclick: async () => { try { if (await F.choose(which, owner)) { await syncIn(); await draw(); } } catch (e) { if (e.name !== 'AbortError') toast(e.message, true); } } }, s.state === 'none' ? 'Choose folder…' : 'Change…') : null,
+            s.state === 'prompt' ? h('button', { class: 'btn small primary', onclick: async () => { if (await F.reconnect(which, owner)) { await syncIn(); await draw(); } else toast('Access was not granted', true); } }, '🔌 Reconnect') : null,
+            s.state !== 'none' ? h('button', { class: 'btn small', title: 'Stop using this folder here (no file is deleted)', onclick: async () => { await F.forget(which, owner); await draw(); } }, 'Disconnect') : null)));
+      }
+      body.replaceChildren(
+        h('p', {}, 'Public protocols are saved in the lab folder and private ones in your private folder, one file per protocol. Saving merges with the file already there, so two people editing the same protocol both keep their versions; Thistle Notebook never deletes files.'),
+        h('table', { class: 'diag' }, h('tr', {}, h('th', {}, 'Folder'), h('th', {}, 'Status'), h('th', {})), rows),
+        canKeepFolders() ? h('p', { class: 'hint' }, 'The browser remembers the folders. After a restart it may ask once for access again (🔌 Reconnect). Files stay on that drive: nothing is uploaded.')
+          : h('div', { class: 'warn-box' }, 'This browser cannot keep a folder connected (Chrome and Edge can). You can still read a folder now; to save a protocol into it, use ⤓ Download file on the protocol and put the file in the folder. ',
+            h('button', { class: 'btn small', onclick: async () => { const fs = await ctx.pickFiles({ folder: true }); let list = []; for (const f of fs) if (/\.(tnote|json)$/i.test(f.name)) list.push(...protocolsInFile(await f.text())); const r = mergeLibrary(P.all, list); for (const p of r.merged) await put(p); toast(`Folder read: ${r.added} new, ${r.updated} updated`); } }, '📂 Read a folder now')),
+        h('div', { class: 'modal-foot' }, h('button', { class: 'btn primary', onclick: () => openLibrary() }, 'Done')));
+    };
+    modal('📁 Protocol folders', body); await draw();
+  }
   const visible = () => P.all.filter(p => !isDeleted(p) && visibleTo(p, me()));
   const md = text => { const el = h('div', { class: 'md lab-md' }); el.innerHTML = window.DOMPurify.sanitize(window.marked.parse(String(text || ''), { gfm: true, breaks: true })); el.querySelectorAll('a[href]').forEach(a => { a.target = '_blank'; a.rel = 'noopener noreferrer'; }); return el; };
   const badge = p => h('span', { class: 'badge-hdr ' + (p.visibility === 'public' ? 'campus' : 'cloud'), title: p.visibility === 'public' ? 'Public: every user of this browser sees it; included in shared library files' : 'Private: only its owner sees it here' }, p.visibility === 'public' ? '👥 public' : '🔒 private');
@@ -28,6 +101,7 @@ export function createProtocols(ctx) {
       list.sort((a, b) => curV(a).title.localeCompare(curV(b).title));
       const search = h('input', { type: 'search', placeholder: 'Search title, tags, wiki page, owner', value: P.q, oninput: e => { P.q = e.target.value; draw(); setTimeout(() => body.querySelector('input[type=search]')?.focus(), 0); } });
       body.replaceChildren(
+        P.folderEl || h('span'),
         h('div', { class: 'proto-tools' }, search,
           h('select', { onchange: e => { P.filter = e.target.value; draw(); } }, [['visible', 'All I can see'], ['mine', 'Mine'], ['public', 'Public'], ['private', 'My private'], ['deleted', 'My deleted']].map(([v, l]) => h('option', { value: v, selected: P.filter === v }, l)))),
         h('div', { class: 'proto-tools' },
@@ -45,6 +119,7 @@ export function createProtocols(ctx) {
           : h('p', { class: 'hint' }, P.all.length ? 'No protocols match.' : 'No protocols yet. Add one with ＋ New protocol, from files, by pasting, or from a source.'),
         h('p', { class: 'hint' }, `Signed in as ${ctx.userName() || '(no name)'}. Public protocols are visible to every user of this browser and go into shared library files; private ones only to you. This organises sharing; it does not protect secrets from someone using this device.`));
     };
+    P.folderEl = await folderLine();
     draw();
     modal('📚 Protocol library', body);
     if (view) viewDialog(view);
@@ -58,6 +133,8 @@ export function createProtocols(ctx) {
       h('div', { class: 'proto-tools' }, back, badge(p), h('span', { class: 'hint' }, `version ${c.v} · owner ${p.ownerName} · last change ${c.author}, ${fmtTime(c.t)}`)),
       c.wiki ? h('p', {}, '📘 Wiki page: ', ctx.wikiUrl(c.wiki) ? h('a', { href: ctx.wikiUrl(c.wiki), target: '_blank', rel: 'noopener noreferrer' }, c.wiki) : h('b', {}, c.wiki)) : null,
       c.tags ? h('p', { class: 'hint' }, `Tags: ${c.tags}`) : null,
+      h('p', { class: 'hint' }, P.pending.has(p.id) ? '⚠ Not yet written to its folder (reconnect the folders).' : P.where[p.id] ? `📁 Saved in the ${P.where[p.id] === 'lab' ? 'lab folder' : 'private folder'}.` : '💻 Kept in this browser (no folder connected for it).',
+        ' ', h('button', { class: 'btn small', title: 'The protocol as a file, to put in a folder yourself', onclick: () => saveText(protocolFile(p), protocolFileName(p), 'application/json') }, '⤓ Download file')),
       isDeleted(p) ? h('div', { class: 'warn-box' }, 'This protocol is deleted (kept in the library and restorable).') : null,
       h('div', { class: 'proto-body' }, c.body.trim() ? md(c.body) : h('p', { class: 'hint' }, '(no steps written)')),
       h('div', { class: 'proto-tools' },
@@ -192,5 +269,5 @@ export function createProtocols(ctx) {
 
   /** Short list for the model in Lab notebook mode. */
   const promptList = () => visible().slice(0, 60).map(p => { const c = curV(p); return { title: c.title, v: c.v, wiki: c.wiki }; });
-  return { load, openLibrary, insertDialog, promptList, _P: P };
+  return { load, openLibrary, insertDialog, promptList, foldersDialog, syncIn, _P: P };
 }
