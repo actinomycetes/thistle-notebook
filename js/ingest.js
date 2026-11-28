@@ -123,7 +123,7 @@ async function docx(file) {
 function tableToMd(t) {
   const rows = [...t.querySelectorAll('tr')].map(tr => [...tr.children].map(c => c.textContent.trim().replace(/\s+/g, ' ').replace(/\|/g, '/')));
   if (!rows.length) return '';
-  const n = Math.max(...rows.map(r => r.length));
+  const n = rows.reduce((width, row) => Math.max(width, row.length), 0);
   return [rows[0], Array(n).fill('---'), ...rows.slice(1)].map(r => '| ' + r.join(' | ') + ' |').join('\n');
 }
 
@@ -192,7 +192,7 @@ async function readCsv(file) {
   const data = (res.data || []).filter(r => Array.isArray(r) && r.some(c => String(c ?? '').trim() !== ''));
   if (!data.length) throw new Error('CSV file is empty.');
   const [head, ...rows] = data;
-  const width = Math.max(head.length, ...rows.map(r => r.length));
+  const width = rows.reduce((width, row) => Math.max(width, row.length), head.length);
   return importTable(Array.from({ length: width }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows);
 }
 const BUILTIN_DATE_FMTS = new Set([14, 15, 16, 17, 22, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 50, 51, 52, 53, 54, 55, 56, 57, 58]);
@@ -310,7 +310,7 @@ async function readXlsx(file) {
     }
     const rows = Array.from(grid, r => r || []).filter(r => r.some(v => v != null && v !== ''));
     if (!rows.length) continue;
-    const head = rows[0], n = Math.max(...rows.map(r => r.length));
+    const head = rows[0], n = rows.reduce((width, row) => Math.max(width, row.length), 0);
     out[sh.getAttribute('name')] = importTable(Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows.slice(1));
   }
   return out;

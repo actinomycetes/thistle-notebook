@@ -320,6 +320,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     const eu = (await parseFile(new File(['V\n"0,125"\n"0,001"\n"-0,050"\n"1234,567"\n"1,000"\n#N/A\n'], 'eu.csv'), {})).tables.eu;
     let emptyCsvErr = '';
     try { await parseFile(new File(['\n   \n'], 'empty.csv'), {}); } catch (e) { emptyCsvErr = e.message; }
+    const tall = (await parseFile(new File(['A,B\n' + '1,2\n'.repeat(150000)], 'tall.csv'), {})).tables.tall;
     const ragged = (await parseFile(new File(['A,B\n1,2,3\n'], 'rag.csv'), {})).tables.rag;
     const tsv = (await parseFile(new File(['A\tB\n1\t2\n'], 'tab.tsv'), {})).tables.tab;
     const xBlob = zip([
@@ -331,10 +332,11 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
     ]);
     const xl = (await parseFile(new File([await xBlob.arrayBuffer()], 'ooxml.xlsx'), {})).tables.S1;
     const tf = await parseFile(new File([JSON.stringify({ format: 1, name: 'Cy', samples: ['s1.fcs'], gates: [{ id: 'g1', name: 'A', parent: 'g2', type: 'rect', x: 'FSC', y: 'SSC' }, { id: 'g2', name: 'B', parent: 'g1', type: 'rect', x: 'FSC', y: 'SSC' }] })], 'cy.tflow'), {});
-    return { eu: eu.rows.map(r => r[0]), emptyCsvErr, raggedCols: ragged.columns, raggedRow: ragged.rows[0], tsvCols: tsv.columns, xlRow: xl.rows[0], tfText: tf.segments[0].text };
+    return { tallRows: tall.rows.length, eu: eu.rows.map(r => r[0]), emptyCsvErr, raggedCols: ragged.columns, raggedRow: ragged.rows[0], tsvCols: tsv.columns, xlRow: xl.rows[0], tfText: tf.segments[0].text };
   });
   ok(JSON.stringify(ing.eu) === '["0,125","0,001","-0,050","1234,567",1000,null]', 'typed(): European decimal commas stay text, English thousands parse, #N/A is null ' + JSON.stringify(ing.eu));
   ok(/empty/i.test(ing.emptyCsvErr), 'readCsv: empty CSV gives clear error');
+  ok(ing.tallRows === 150000, 'readCsv: imports all 150,000 rows');
   ok(ing.raggedCols.length === 3 && ing.raggedRow[2] === 3, 'readCsv: ragged extra columns are kept');
   ok(JSON.stringify(ing.tsvCols) === '["A","B"]', 'readCsv: .tsv uses tab delimiter');
   ok(JSON.stringify(ing.xlRow) === '["田中",null,"2026-01-15","2026-01-15","ok"]', 'readXlsx: relative xl/ path, omitted r attrs, empty <v/>, t="d", serial date, <rPh>/<f> exclusion ' + JSON.stringify(ing.xlRow));
