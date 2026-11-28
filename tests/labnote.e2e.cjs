@@ -67,6 +67,7 @@ function labReply(last) {
   // ---------- direct edit ----------
   const editSection = async (key, text) => {
     await page.click(`#labPanel .lab-sec[data-key="${key}"] button[title="Edit this section"]`);
+    await page.click(`#labPanel .lab-sec[data-key="${key}"] button[data-ed-mode="md"]`);
     await page.fill(`#labPanel .lab-sec[data-key="${key}"] textarea`, text);
     await page.click(`#labPanel .lab-sec[data-key="${key}"] button:has-text("Save")`);
     await page.waitForSelector(`#labPanel .lab-sec[data-key="${key}"] .lab-md`);
@@ -215,6 +216,50 @@ function labReply(last) {
   await page.waitForFunction(() => document.querySelectorAll('#nbSelect option').length === 2 && window.thistleNotebook.lab._L.note?.entries?.length === 1);
   const back = await page.evaluate(() => { const L = window.thistleNotebook.lab._L; return { revs: L.note.entries[0].fields.aim.revs.length, file: L.files[0]?.blob?.size, name: L.files[0]?.name }; });
   ok(back.revs === 3 && back.file === fs.statSync(path.join(FX, 'antibiotic_plate_labelled.png')).size && back.name === 'antibiotic_plate_labelled.png', 'reopened notebook has the versions and the identical attachment');
+
+  // ---------- Word-style rich editor: sentences, table generator, picture upload, Confluence export ----------
+  await page.evaluate(() => localStorage.removeItem('tn.labEditorMode'));
+  await page.click('#labPanel .lab-sec[data-key="materials"] button[title="Edit this section"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="materials"] .lab-rich');
+  ok(await page.isVisible('#labPanel .lab-sec[data-key="materials"] .lab-rich') && await page.isHidden('#labPanel .lab-sec[data-key="materials"] textarea'), 'section opens in Word-style rich editor by default');
+  await page.click('#labPanel .lab-sec[data-key="materials"] .lab-rich');
+  await page.keyboard.type('Prepared fresh ');
+  await page.click('#labPanel .lab-sec[data-key="materials"] button[title^="Bold"]');
+  await page.keyboard.type('LB broth');
+  await page.click('#labPanel .lab-sec[data-key="materials"] button[title^="Bold"]');
+  await page.keyboard.type(' for ');
+  await page.click('#labPanel .lab-sec[data-key="materials"] button[title^="Italic"]');
+  await page.keyboard.type('E. coli');
+  await page.click('#labPanel .lab-sec[data-key="materials"] button[title^="Italic"]');
+  await page.keyboard.type('.');
+  // table generator (2 rows × 2 cols, then add row)
+  await page.click('#labPanel .lab-sec[data-key="materials"] button:has-text("Table")');
+  await page.click('#popover .lab-tbl-cell[aria-label="2 by 2 table"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="materials"] table.lab-ed-table');
+  await page.evaluate(() => {
+    const t = document.querySelector('#labPanel .lab-sec[data-key="materials"] table.lab-ed-table');
+    const ths = t.querySelectorAll('th'), tds = t.querySelectorAll('td');
+    ths[0].textContent = 'Reagent'; ths[1].textContent = 'Conc';
+    tds[0].textContent = 'NaCl'; tds[1].textContent = '10 g/L';
+  });
+  await page.click('#labPanel .lab-sec[data-key="materials"] table.lab-ed-table td >> nth=0');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="materials"] .lab-tbl-bar:not([hidden])');
+  await page.click('#labPanel .lab-sec[data-key="materials"] .lab-tbl-bar button:has-text("+ Row ↓")');
+  ok(await page.$$eval('#labPanel .lab-sec[data-key="materials"] table.lab-ed-table tbody tr', r => r.length) === 2, 'contextual table bar adds a row');
+  // upload & insert picture directly from editor toolbar
+  await page.click('#labPanel .lab-sec[data-key="materials"] button:has-text("Picture")');
+  const [picFc] = await Promise.all([page.waitForEvent('filechooser'), page.click('#popover .menu-item:has-text("Upload picture")')]);
+  await picFc.setFiles(path.join(FX, 'antibiotic_plate_labelled.png'));
+  await page.waitForSelector('#labPanel .lab-sec[data-key="materials"] .lab-ed-fig img');
+  await page.click('#labPanel .lab-sec[data-key="materials"] button:has-text("Save")');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="materials"] .lab-md table');
+  const richRes = await page.evaluate(async () => {
+    const L = await import('./js/labnote.js'), e = window.thistleNotebook.lab.activeEntry();
+    return { md: L.cur(e.fields.materials), wiki: L.entryToWiki(e, { footer: false }).markup, html: L.entryToHtml(e, { footer: false }) };
+  });
+  ok(richRes.md.includes('**LB broth**') && richRes.md.includes('*E. coli*') && richRes.md.includes('| Reagent | Conc |') && richRes.md.includes('](attachment:'), 'Word-style editor saves clean canonical Markdown with formatting, table and image');
+  ok(richRes.wiki.includes('*LB broth*') && richRes.wiki.includes('_E. coli_') && richRes.wiki.includes('||Reagent||Conc||') && richRes.wiki.includes('|NaCl|10 g/L|') && richRes.wiki.includes('|width=450!'), 'Word-style content exports cleanly to Confluence wiki markup');
+  ok(richRes.html.includes('<strong>LB broth</strong>') && richRes.html.includes('<em>E. coli</em>') && richRes.html.includes('<table>') && richRes.html.includes('<th>Reagent</th>'), 'Word-style content exports cleanly to direct Confluence formatted HTML');
 
   ok(!errors.length, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
   console.log(log.join('\n'));

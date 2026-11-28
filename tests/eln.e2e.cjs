@@ -101,6 +101,7 @@ const block = o => '```lab-note\n' + JSON.stringify(o) + '\n```';
   // ---------- finalise, witness, amendments, seal ----------
   const editSection = async (key, text) => {
     await page.click(`#labPanel .lab-sec[data-key="${key}"] button[title="Edit this section"]`);
+    await page.click(`#labPanel .lab-sec[data-key="${key}"] button[data-ed-mode="md"]`);
     await page.fill(`#labPanel .lab-sec[data-key="${key}"] textarea`, text);
     await page.click(`#labPanel .lab-sec[data-key="${key}"] button:has-text("Save")`);
     await page.waitForSelector(`#labPanel .lab-sec[data-key="${key}"] .lab-md`);
