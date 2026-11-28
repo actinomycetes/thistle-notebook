@@ -45,7 +45,7 @@ function saveSettings(s) {
 
 const S = {
   settings: loadSettings(), elm: null, models: [], modelsError: '', nb: null, sources: [], notes: [], messages: [],
-  chunkCache: new Map(), busy: false, abort: null, tp: null, tf: null,
+  chunkCache: new Map(), busy: false, ingesting: 0, abort: null, tp: null, tf: null,
   files: new Map(),      // source id → original File, for this browser session only (browsers cannot keep paths)
   tableCache: new Map(), // source id → tables re-read from a linked original (datasets too large to keep)
   histPos: -1,
@@ -197,6 +197,7 @@ async function openNotebook(id) {
   await S.lab?.load();
 }
 function newNotebookDialog() {
+  if (S.busy || S.ingesting > 0) return toast('Wait for the current task to finish', true);
   const name = h('input', { type: 'text', value: 'Untitled notebook' }), oc = h('input', { type: 'checkbox' });
   modal('New notebook', h('div', {},
     h('div', { class: 'form-grid' }, h('label', {}, 'Name'), name,
@@ -309,32 +310,39 @@ function renderSources() {
           h('button', { class: 'icon tabs-btn', title: 'Which tabs this source is in', onclick: e => tabMenu(s, e.currentTarget) }, nTabs > 1 ? `📁${nTabs}` : '📁')])));
   }
 }
+const AUDIO_FILE = /\.(mp3|m4a|wav|webm|mp4|mpeg|mpga|ogg|flac)$/i;
 async function addFiles(files) {
   if (!S.nb) return;
-  for (const file of files) {
-    if (file.name.toLowerCase().endsWith('.tnote')) { await openTnote(file); continue; }
-    const s = { id: uid(), nb: S.nb.id, name: file.name, kind: 'text', role: 'reference', enabled: true, created: Date.now(), status: 'busy', chars: 0, meta: {},
-      tabs: [S.nb.viewTab], file: fileInfo(file) };
-    S.sources.push(s); S.files.set(s.id, file); renderSources();
-    try {
-      const ctx = { elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(),
-        log: m => { s.progress = m; renderSources(); } };
-      if (/\.(mp3|m4a|wav|webm|mp4|mpeg|mpga|ogg|flac)$/i.test(file.name) && onCampus() && !transcriptionModel()) throw new Error('No on-campus transcription model on ELM; this notebook is on-campus only.');
-      s.file.sha256 = await fileHash(file);
-      const r = await parseFile(file, ctx);
-      await finishSource(s, r);
-    } catch (e) {
-      console.error(e); s.status = 'error'; s.error = e.message; renderSources();
+  const nb = S.nb, nbId = nb.id, viewTab = nb.viewTab, onCampusFlag = !!nb.onCampusOnly;
+  S.ingesting++; syncNavLock();
+  try {
+    for (const file of files) {
+      if (file.name.toLowerCase().endsWith('.tnote')) { await openTnote(file); continue; }
+      if (S.nb?.id !== nbId) break;
+      const s = { id: uid(), nb: nbId, name: file.name, kind: 'text', role: 'reference', enabled: true, created: Date.now(), status: 'busy', chars: 0, meta: {},
+        tabs: [viewTab], file: fileInfo(file) };
+      S.sources.push(s); S.files.set(s.id, file); renderSources();
+      try {
+        const txModel = transcriptionModel();
+        const ctx = { elm: S.elm, visionModel: visionModel(), transcriptionModel: txModel || (onCampusFlag ? '' : 'whisper-1'), onCampusOnly: onCampusFlag,
+          log: m => { s.progress = m; if (S.nb?.id === nbId) renderSources(); } };
+        if (AUDIO_FILE.test(file.name) && onCampusFlag && !txModel) throw new Error('No on-campus transcription model on ELM; this notebook is on-campus only.');
+        s.file.sha256 = await fileHash(file);
+        const r = await parseFile(file, ctx);
+        await finishSource(s, r, { nb });
+      } catch (e) {
+        console.error(e); s.status = 'error'; s.error = e.message; if (S.nb?.id === nbId) renderSources();
+      }
     }
-  }
+  } finally { S.ingesting--; syncNavLock(); }
 }
-async function finishSource(s, r, { replace = false } = {}) {
+async function finishSource(s, r, { replace = false, nb = S.nb } = {}) {
   s.kind = r.kind; s.role = r.role || guessRole(s.name, r.kind); s.segments = r.segments; s.tables = r.tables || null;
   s.meta = { ...(r.meta || {}) }; s.chars = r.segments.reduce((n, x) => n + x.text.length, 0);
   const chunks = chunkSegments(r.segments).map((c, i) => ({ id: uid(), nb: s.nb, src: s.id, idx: i, loc: c.loc, text: c.text, emb: null, embModel: null }));
   const em = embeddingModel();
   if (em && chunks.length) {
-    s.progress = `Indexing ${chunks.length} passages…`; renderSources();
+    s.progress = `Indexing ${chunks.length} passages…`; if (S.nb?.id === s.nb) renderSources();
     try {
       const vecs = await S.elm.embed(chunks.map(c => c.text), em);
       chunks.forEach((c, i) => { c.emb = new Float32Array(vecs[i]); c.embModel = em; }); s.meta.embModel = em;
@@ -343,9 +351,13 @@ async function finishSource(s, r, { replace = false } = {}) {
   s.status = 'ready'; delete s.progress;
   if (replace) await db.replaceSource(s, chunks); // all or nothing
   else { await db.putMany('chunks', chunks); await db.put('sources', s); }
-  if (!s.tables && r.sessionTables) S.tableCache.set(s.id, r.sessionTables);
-  else S.tableCache.delete(s.id);
-  S.chunkCache.set(s.id, chunks); await db.touch(S.nb); renderSources();
+  if (S.nb?.id === s.nb) {
+    if (!s.tables && r.sessionTables) S.tableCache.set(s.id, r.sessionTables);
+    else S.tableCache.delete(s.id);
+    S.chunkCache.set(s.id, chunks);
+  }
+  if (nb && nb.id === s.nb) await db.touch(nb);
+  if (S.nb?.id === s.nb) renderSources();
 }
 const fileInfo = f => ({ name: f.name, size: f.size, lastModified: f.lastModified, path: f.webkitRelativePath || '' });
 // Content fingerprint, so a moved or copied file (new date, same bytes) is not mistaken for an edited one
@@ -415,19 +427,21 @@ async function linkFile(s, file) {
   }
   renderSources();
 }
-const parseCtx = s => ({ elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(), log: m => { s.progress = m; renderSources(); } });
+const parseCtx = s => ({ elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || (onCampus() ? '' : 'whisper-1'), onCampusOnly: onCampus(), log: m => { s.progress = m; if (S.nb?.id === s.nb) renderSources(); } });
 // Re-read: parse and index the new file first, then replace the source and its passages in one transaction. If reading
 // or saving fails, the previous version (record, passages, tables) stays as it was (v0.6.2).
 async function rereadSource(s) {
   const file = S.files.get(s.id); if (!file) return toast('Link the original file first (📂 Find files)', true);
-  const before = s.status; s.status = 'busy'; renderSources();
+  const nb = S.nb, nbId = s.nb || nb?.id;
+  const before = s.status; s.status = 'busy'; if (S.nb?.id === nbId) renderSources();
   try {
+    if (AUDIO_FILE.test(file.name) && onCampus() && !transcriptionModel()) throw new Error('No on-campus transcription model on ELM; this notebook is on-campus only.');
     const r = await parseFile(file, parseCtx(s));
     const ns = { ...s, file: { ...fileInfo(file), sha256: await fileHash(file) } }; delete ns.error;
-    await finishSource(ns, { ...r, role: s.role }, { replace: true });
+    await finishSource(ns, { ...r, role: s.role }, { replace: true, nb });
     for (const k of Object.keys(s)) if (!(k in ns)) delete s[k];
-    Object.assign(s, ns); file._sha256 = ns.file.sha256; renderSources(); toast(`Re-read “${s.name}”`);
-  } catch (e) { s.status = before; delete s.progress; renderSources(); toast(`Could not re-read “${s.name}”: ${e.message}. The previous version is kept.`, true, 6000); }
+    Object.assign(s, ns); file._sha256 = ns.file.sha256; if (S.nb?.id === nbId) renderSources(); toast(`Re-read “${s.name}”`);
+  } catch (e) { s.status = before; delete s.progress; if (S.nb?.id === nbId) renderSources(); toast(`Could not re-read “${s.name}”: ${e.message}. The previous version is kept.`, true, 6000); }
 }
 function openOriginal(s) {
   const f = S.files.get(s.id); if (!f) return;
@@ -469,7 +483,7 @@ function findFilesDialog() {
 
 // ---------- closing a notebook ----------
 async function closeNotebook() {
-  if (S.busy) return toast('Wait for the current answer to finish', true);
+  if (S.busy || S.ingesting > 0) return toast('Wait for the current task to finish', true);
   const nb = S.nb, empty = !S.sources.length && !S.messages.length && !S.notes.length;
   const dirty = (nb.updated || 0) > (nb.savedAt || 0);
   const finish = async () => {
@@ -685,8 +699,10 @@ async function send(text, extra = {}) {
 }
 
 async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
+  const nb = S.nb, nbId = nb?.id;
+  if (!nbId) return;
   const model = currentModel();
-  const a = { id: uid(), nb: S.nb.id, role: 'assistant', content: '', t: Date.now(), meta: { model, studio, labEntry: S.lab?.activeEntry()?.id || null } };
+  const a = { id: uid(), nb: nbId, role: 'assistant', content: '', t: Date.now(), meta: { model, studio, labEntry: S.lab?.activeEntry()?.id || null } };
   const el = h('div', { class: 'msg assistant' }, h('div', { class: 'who' }, `${model.includes('/') ? '🏛' : '☁'} ${model} · preparing…`), h('div', { class: 'bubble' }, h('div', { class: 'md streaming' })));
   $('#chatLog').append(el); el.scrollIntoView({ block: 'end' });
   setBusy(true);
@@ -694,7 +710,7 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
     const sources = enabledSources();
     const { context, cites, mode: ctxMode } = await prepare(query, sources);
     Object.assign(a.meta, { cites, ctxMode, nSources: sources.length, sourceIds: sources.map(x => x.id), sourceNames: sources.map(x => x.name).slice(0, 200),
-      tabIds: [...activeTabIds()], tabNames: S.nb.tabs.filter(t => t.active).map(t => t.name) });
+      tabIds: [...activeTabIds()], tabNames: nb.tabs.filter(t => t.active).map(t => t.name) });
     let web = null;
     if ($('#webToggle').checked && !onCampus() && depth === 0) {
       el.querySelector('.who').textContent = `🌐 searching the web via ${searchModel()}…`;
@@ -719,12 +735,15 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
       + (S.messages[S.messages.length - 1]?.role === 'results' ? `\n\n# NOW\n${RESULT_NUDGE}` : '')
       + (web ? `\n\n# WEB FINDINGS (via ${web.model})\n${web.text}\n\nWeb sources: ${web.citations.map((c, i) => `[W${i + 1}] ${c.title} <${c.url}>`).join('\n')}` : '');
     const msgs = [{ role: 'system', content: sys }, ...historyFor(S.messages.length)];
-    $('#ctxInfo').textContent = `${ctxMode === 'full' ? 'Full text' : ctxMode === 'retrieval' ? `${Object.keys(cites).length} passages` : 'No sources'} · ~${Math.round(estTokens(sys) / 1000)}k tokens sent`;
-    el.querySelector('.who').textContent = `${model.includes('/') ? '🏛' : '☁'} ${model} · writing…`;
+    if (S.nb?.id === nbId) {
+      $('#ctxInfo').textContent = `${ctxMode === 'full' ? 'Full text' : ctxMode === 'retrieval' ? `${Object.keys(cites).length} passages` : 'No sources'} · ~${Math.round(estTokens(sys) / 1000)}k tokens sent`;
+      el.querySelector('.who').textContent = `${model.includes('/') ? '🏛' : '☁'} ${model} · writing…`;
+    }
     S.abort = new AbortController();
     let md = el.querySelector('.md'), pending = false, thinking = '';
     const paint = () => {
       pending = false;
+      if (S.nb?.id !== nbId) return;
       const r = renderMarkdown(a.content || (thinking ? `<think>${thinking}` : '…'), { cites, web: web?.citations || [] });
       r.classList.add('streaming'); md.replaceWith(r); md = r;
     };
@@ -737,13 +756,16 @@ async function assistantTurn(query, { studio, depth = 0, mode, tone } = {}) {
     if (e.name === 'AbortError') a.meta.error = 'Stopped.'; else { a.meta.error = e.message; console.error(e); }
   } finally { S.abort = null; }
   // Save and show the answer before accepting the next request (no gap where a new message could jump ahead)
-  try { S.messages.push(a); await db.put('messages', a); await db.touch(S.nb); el.replaceWith(messageEl(a)); }
-  finally { setBusy(false); }
+  try {
+    await db.put('messages', a);
+    await db.touch(nb);
+    if (S.nb?.id === nbId) { S.messages.push(a); el.replaceWith(messageEl(a)); }
+  } finally { setBusy(false); }
   refreshCosts();
-  if (!a.meta.error) await S.lab.autoApply(a);
+  if (S.nb?.id === nbId && !a.meta.error) await S.lab.autoApply(a);
   // Analyses requested by the model → run in Thistle Plot, then hand results back (bounded rounds)
   const specs = parseSpecs(a.content).filter(s => s.ok);
-  if (specs.length && $('#autoRunToggle').checked && depth < +S.settings.autoRunRounds && !a.meta.error) await runAllAndInterpret(a, depth);
+  if (S.nb?.id === nbId && specs.length && $('#autoRunToggle').checked && depth < +S.settings.autoRunRounds && !a.meta.error) await runAllAndInterpret(a, depth);
 }
 const WANTS_WEB = /\b(web[ -]?search|search (the )?(web|internet|online)|google|look (it )?up online|(latest|recent|new) (papers?|publications?|literature|studies|research)|up[ -]?to[ -]?date|current literature)\b/i;
 // ---------------- Suggest searches ----------------
@@ -796,7 +818,11 @@ function searchesEl(m, wrap) {
   return wrap;
 }
 
-function setBusy(b) { S.busy = b; $('#btnSend').disabled = b; $('#btnStop').disabled = !b; }
+function syncNavLock() {
+  const locked = S.busy || S.ingesting > 0;
+  for (const sel of ['#nbSelect', '#btnNewNb', '#btnCloseNb']) { const el = $(sel); if (el) el.disabled = locked; }
+}
+function setBusy(b) { S.busy = b; $('#btnSend').disabled = b; $('#btnStop').disabled = !b; syncNavLock(); }
 
 // ---------------- Thistle Plot analysis cards ----------------
 // Tables kept in the notebook, or re-read this session from a linked original (datasets too large to keep)
@@ -888,6 +914,7 @@ function describeSpec(s) {
   }
 }
 async function runSpec(m, k) {
+  const nb = S.nb, nbId = m.nb || nb?.id;
   const spec = parseSpecs(m.content)[k]?.spec;
   m.meta.tp ||= {};
   try {
@@ -900,8 +927,8 @@ async function runSpec(m, k) {
     console.error(e); const prev = m.meta.tp[k], lastOk = prev?.status === 'ok' ? prev : prev?.lastOk;
     m.meta.tp[k] = { status: 'err', error: e.message, at: Date.now(), ...(lastOk ? { lastOk } : {}) };
   }
-  await db.put('messages', m); if (S.nb) await db.touch(S.nb); // a new result is an unsaved change (v0.6.2)
-  const old = $(`.msg[data-id="${m.id}"]`); if (old) old.replaceWith(messageEl(m));
+  await db.put('messages', m); if (nb && nb.id === nbId) await db.touch(nb); // a new result is an unsaved change (v0.6.2)
+  if (S.nb?.id === nbId) { const old = $(`.msg[data-id="${m.id}"]`); if (old) old.replaceWith(messageEl(m)); }
   return m.meta.tp[k];
 }
 async function runAllAndInterpret(m, depth) {
@@ -943,6 +970,8 @@ function renderStudio() {
 }
 async function runStudio(t) {
   if (S.busy) return toast('Wait for the current answer to finish', true);
+  const nb = S.nb, nbId = nb?.id;
+  if (!nbId) return;
   const src = enabledSources();
   if (!src.length) return toast('Select at least one source', true);
   if (t.mode === 'data') { // into the chat, where Thistle Plot runs happen
@@ -950,7 +979,7 @@ async function runStudio(t) {
     return send(`Studio: ${t.title}\n\n${t.prompt}`, { studio: t.title, mode: 'data' });
   }
   const tone = t.toneFixed || (t.tone ? $('#toneSelect').value : null);
-  const note = { id: uid(), nb: S.nb.id, title: `${t.title}${tone ? ' — ' + TONES[tone].label : ''}`, content: '', t: Date.now(), meta: { studio: t.id, cites: {}, busy: true } };
+  const note = { id: uid(), nb: nbId, title: `${t.title}${tone ? ' — ' + TONES[tone].label : ''}`, content: '', t: Date.now(), meta: { studio: t.id, cites: {}, busy: true } };
   S.notes.unshift(note); renderNotes();
   setBusy(true);
   try {
@@ -960,24 +989,26 @@ async function runStudio(t) {
       if (!others.some(s => s.role === 'rubric')) toast('No source has the role "Rubric / marking scheme"', true);
       let offset = 0; const summary = [];
       for (const [i, sub] of subs.entries()) {
-        note.meta.progress = `${i + 1}/${subs.length}: ${sub.name}`; renderNotes();
+        note.meta.progress = `${i + 1}/${subs.length}: ${sub.name}`; if (S.nb?.id === nbId) renderNotes();
         const r = await complete(t, [...others, sub], tone, `Submission being marked: "${sub.name}".`);
         const shifted = r.text.replace(/\[(\d+(?:\s*[,–-]\s*\d+)*)\]/g, (_, g) => '[' + g.replace(/\d+/g, n => +n + offset) + ']');
         Object.entries(r.cites).forEach(([n, c]) => (note.meta.cites[+n + offset] = c));
         offset += Object.keys(r.cites).length;
         note.content += `\n\n## ${sub.name}\n\n${shifted}`;
         const mk = r.text.match(/Suggested overall mark:\**\s*([^\n]+)/i); summary.push(`| ${sub.name} | ${mk ? mk[1].replace(/\*/g, '').trim() : '—'} |`);
-        await db.put('notes', note); renderNotes();
+        await db.put('notes', note); if (S.nb?.id === nbId) renderNotes();
       }
       if (t.id === 'mark') note.content = `> Suggested marks are for the human marker to check; every decision is yours.\n\n| Submission | Suggested mark |\n|---|---|\n${summary.join('\n')}\n` + note.content;
     } else {
       const r = await complete(t, src, tone);
       note.content = r.text; note.meta.cites = r.cites; note.meta.web = r.web;
     }
-    note.meta.model = currentModel(); note.meta.tabNames = S.nb.tabs.filter(t => t.active).map(t => t.name);
+    note.meta.model = currentModel(); note.meta.tabNames = nb.tabs.filter(t => t.active).map(t => t.name);
   } catch (e) { note.content += `\n\n**Error:** ${e.message}`; }
   finally { delete note.meta.busy; delete note.meta.progress; setBusy(false); }
-  await db.put('notes', note); await saveNb(); renderNotes(); refreshCosts(); viewNote(note);
+  await db.put('notes', note); await db.touch(nb);
+  if (S.nb?.id === nbId) { renderNotes(); viewNote(note); }
+  refreshCosts();
 }
 async function complete(t, sources, tone, extraUser = '') {
   const model = currentModel();
@@ -1114,12 +1145,22 @@ async function importFromTF() {
     toast('Thistle Flow statistics added as a dataset source'); closeDrawer();
   } catch (e) { toast(e.message, true); }
 }
+const tpCell = v => {
+  if (v == null) return null;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
+  if (typeof v !== 'string') return v;
+  const s = v.trim();
+  if (s === '') return null;
+  if (/^[-+]?0\d+$/.test(s)) return s;
+  if (/^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i.test(s)) { const n = Number(s); if (Number.isFinite(n)) return n; }
+  return s;
+};
 async function importFromTP() {
   try {
     const G = await S.tp.exclusive(async () => JSON.parse(JSON.stringify((await S.tp.ready()).eval('G')))); // not mid-run
     const cols = ['row'], rows = [];
     G.groups.forEach(g => g.reps.forEach(r => cols.push(G.groups.length > 1 || g.reps.length > 1 ? `${g.name} | ${r}` : g.name)));
-    for (let i = 0; i < G.nRows; i++) rows.push([G.rowNames?.[i] ?? `Row ${i + 1}`, ...G.groups.flatMap(g => g.reps.map((_, k) => { const v = g.data?.[i]?.[k]; return v === '' || v == null ? null : isFinite(+v) ? +v : v; }))]);
+    for (let i = 0; i < G.nRows; i++) rows.push([G.rowNames?.[i] ?? `Row ${i + 1}`, ...G.groups.flatMap(g => g.reps.map((_, k) => tpCell(g.data?.[i]?.[k])))]);
     const name = `Thistle Plot table ${dateStamp()}`;
     await addTextSource(name, profileTable({ columns: cols, rows }, name), 'dataset', 'dataset', { tables: { 'Thistle Plot table': { columns: cols, rows } } });
     toast('Thistle Plot table added as a dataset source'); closeDrawer();
@@ -1334,7 +1375,7 @@ async function init() {
     activeEntry: () => S.lab.activeEntry(), entryTitle: pageTitle,
     insertIntoEntry: (e, text, snap) => S.lab.insertIntoEntry(e, text, snap),
     sources: () => S.sources.filter(s => s.status === 'ready' && s.segments?.length),
-    parseFile: f => parseFile(f, { elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || 'whisper-1', onCampusOnly: onCampus(), log: () => { } }),
+    parseFile: f => parseFile(f, { elm: S.elm, visionModel: visionModel(), transcriptionModel: transcriptionModel() || (onCampus() ? '' : 'whisper-1'), onCampusOnly: onCampus(), log: () => { } }),
   });
   await S.protocols.load();
   let rt = 'lab'; try { rt = localStorage.getItem('tn.rightTab') || 'lab'; } catch { }
@@ -1347,11 +1388,14 @@ async function init() {
   await openNotebook(list.find(n => n.id === last)?.id || list[0].id);
   loadModels();
 
-  $('#nbSelect').onchange = e => openNotebook(e.target.value);
+  $('#nbSelect').onchange = e => {
+    if (S.busy || S.ingesting > 0) { e.target.value = S.nb?.id || ''; return toast('Wait for the current task to finish', true); }
+    openNotebook(e.target.value);
+  };
   $('#btnNewNb').onclick = newNotebookDialog;
   $('#btnNbSettings').onclick = notebookDialog;
   $('#btnSave').onclick = saveTnote;
-  $('#openInput').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (f) await openTnote(f); };
+  $('#openInput').onchange = async e => { const f = e.target.files[0]; e.target.value = ''; if (!f) return; if (S.busy || S.ingesting > 0) return toast('Wait for the current task to finish', true); await openTnote(f); };
   $('#modelSelect').onchange = async () => { updateReasonSelect(); S.nb.model = currentModel(); await db.put('notebooks', S.nb); };
   $('#modeSelect').onchange = async e => { S.nb.mode = e.target.value; await db.put('notebooks', S.nb); };
   $('#toneSelect').onchange = async e => { S.nb.tone = e.target.value; await db.put('notebooks', S.nb); };
@@ -1396,4 +1440,4 @@ async function init() {
 
 init().catch(e => { console.error(e); document.body.prepend(h('div', { class: 'err-box' }, 'Thistle Notebook failed to start: ' + e.message)); });
 window.thistleNotebook = S; // handy for debugging, like window.thistleFlow
-S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile, openNotebook }; // for tests/robust.e2e.cjs
+S._t = { tpCard, runSpec, rereadSource, citeSource, resultsDigest, linkFile, openNotebook, setBusy, parseCtx, tpCell }; // for tests/robust.e2e.cjs
