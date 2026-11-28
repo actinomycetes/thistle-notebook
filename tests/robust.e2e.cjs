@@ -314,5 +314,43 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(io.utf8Flag === 0x0800 && io.dosDate > 0 && io.protoSafe && /CRC|mismatch/i.test(io.crcErr), 'zip/unzip sets UTF-8 flag + DOS date, avoids prototype collisions, and verifies CRC32');
   ok(io.impErr && io.noOrphan, 'failed importNotebook leaves no orphaned notebook in IndexedDB');
 
+  // ---- on-campus audio privacy guard, <think> table export index, tpCell, and busy nav lock ----
+  const guards = await page.evaluate(async () => {
+    const S = window.thistleNotebook;
+    const { parseFile } = await import('./js/ingest.js');
+    const { renderMarkdown } = await import('./js/md.js');
+    const { extractTables } = await import('./js/export.js');
+    const prevOC = S.nb.onCampusOnly, prevModels = S.models;
+    S.nb.onCampusOnly = true; S.models = [];
+    const ctx = S._t.parseCtx({ nb: S.nb.id });
+    let transcribeCalls = 0;
+    const fakeElm = { transcribe: async () => { transcribeCalls++; return 'leaked'; } };
+    const mp3 = new File([new Uint8Array([0x49, 0x44, 0x33])], 'rec.mp3', { type: 'audio/mpeg' });
+    let parseErr = ''; try { await parseFile(mp3, { elm: fakeElm, transcriptionModel: 'whisper-1', onCampusOnly: true }); } catch (e) { parseErr = e.message; }
+    let emptyErr = ''; try { await parseFile(mp3, { elm: fakeElm, transcriptionModel: '', onCampusOnly: true }); } catch (e) { emptyErr = e.message; }
+    S.nb.onCampusOnly = prevOC; S.models = prevModels;
+
+    const mdText = '<think>\n\n| H |\n|---|\n| 0 |\n\n</think>\n\n| A |\n|---|\n| 1 |\n\n| B |\n|---|\n| 2 |\n';
+    const indices = [];
+    renderMarkdown(mdText, { tableTools: i => { indices.push(i); return document.createElement('span'); } });
+    const extracted = extractTables(mdText);
+
+    S._t.setBusy(true);
+    const locked = ['#nbSelect', '#btnNewNb', '#btnCloseNb'].every(sel => document.querySelector(sel).disabled);
+    S._t.setBusy(false);
+    const unlocked = ['#nbSelect', '#btnNewNb', '#btnCloseNb'].every(sel => !document.querySelector(sel).disabled);
+
+    return {
+      ctxModel: ctx.transcriptionModel, transcribeCalls, parseErr, emptyErr,
+      indices, extractedLen: extracted.length,
+      locked, unlocked,
+      tpCells: [S._t.tpCell('   '), S._t.tpCell('001'), S._t.tpCell('0x10'), S._t.tpCell('3.5')],
+    };
+  });
+  ok(guards.ctxModel === '' && guards.transcribeCalls === 0 && /on-campus/i.test(guards.parseErr) && /on-campus/i.test(guards.emptyErr), 'on-campus audio never falls back to cloud whisper-1 ' + JSON.stringify(guards));
+  ok(JSON.stringify(guards.indices) === '[0,1]' && guards.extractedLen === 2, 'md.js table export indices skip tables inside <think> ' + JSON.stringify(guards.indices));
+  ok(guards.locked && guards.unlocked, 'notebook switcher/new/close controls lock while busy and unlock when idle');
+  ok(JSON.stringify(guards.tpCells) === '[null,"001","0x10",3.5]', 'importFromTP strict cell parser keeps whitespace null and leading-zero IDs text');
+
   await b.close(); process.exit(fails ? 1 : 0);
 })().catch(e => { console.error(e); process.exit(1); });

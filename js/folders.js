@@ -58,9 +58,17 @@ export function createFolders({ db }) {
   async function readFile(dir, name) {
     try { return protocolsInFile(await (await (await dir.getFileHandle(name)).getFile()).text())[0] || null; } catch { return null; }
   }
+  async function findById(dir, id) {
+    const out = [], suffix = `[${id}].tnote`;
+    for await (const [name, entry] of dir.entries()) {
+      if (entry.kind !== 'file' || !name.endsWith(suffix)) continue;
+      try { const p = protocolsInFile(await (await entry.getFile()).text()).find(x => x.id === id); if (p) out.push({ name, protocol: p }); } catch { }
+    }
+    return out;
+  }
   async function writeFile(dir, name, text) {
     const fh = await dir.getFileHandle(name, { create: true }), w = await fh.createWritable();
     await w.write(text); await w.close();
   }
-  return { status, choose, forget, reconnect, ready, readAll, readFile, writeFile };
+  return { status, choose, forget, reconnect, ready, readAll, readFile, findById, writeFile };
 }

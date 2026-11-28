@@ -61,6 +61,8 @@ export async function parseFile(file, ctx) {
     return { kind: 'image', segments: [{ loc: 'image', text: txt }], meta: { visionModel: ctx.visionModel } };
   }
   if (AUDIO.test(low)) {
+    if (!ctx.transcriptionModel || (ctx.onCampusOnly && !ctx.transcriptionModel.includes('/')))
+      throw new Error('No on-campus transcription model on ELM; this notebook is on-campus only.');
     if (file.size > 9.5 * 1048576) throw new Error('Audio is over ELM\'s 10 MiB request limit; compress it (e.g. mono 64 kbps MP3) or split it.');
     log('Transcribing audio…');
     return { kind: 'audio', segments: splitLines(await ctx.elm.transcribe(file, ctx.transcriptionModel)), meta: { transcribed: true } };
