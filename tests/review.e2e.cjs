@@ -372,7 +372,7 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(!r.error && /Holm/.test(r.text || ''), 'setEl: ASCII "Holm-Sidak" matches TP Unicode label ' + (r.error || ''));
   r = await run({ test: 'anova', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Post-hoc correction': '' } }, optDs);
   ok(r.error, 'setEl: empty string select option is refused');
-  r = await run({ test: 'mannwhitney', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Group A': 'A', 'Group B': 'B' } }, optDs);
+  r = await run({ test: 'mw', layout: 'long', group: 'G', value: 'Y', dataset: 'opts.csv', options: { 'Group A': 'A', 'Group B': 'B' } }, optDs);
   ok(!r.error && /\bA\b/.test(r.text || '') && !/DrugA/.test(r.text || ''), 'setEl: exact option "A" is chosen over substring "DrugA" ' + (r.error || ''));
 
   await b.close(); process.exit(fails ? 1 : 0);
