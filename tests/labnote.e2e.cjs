@@ -261,6 +261,37 @@ function labReply(last) {
   ok(richRes.wiki.includes('*LB broth*') && richRes.wiki.includes('_E. coli_') && richRes.wiki.includes('||Reagent||Conc||') && richRes.wiki.includes('|NaCl|10 g/L|') && richRes.wiki.includes('|width=450!'), 'Word-style content exports cleanly to Confluence wiki markup');
   ok(richRes.html.includes('<strong>LB broth</strong>') && richRes.html.includes('<em>E. coli</em>') && richRes.html.includes('<table>') && richRes.html.includes('<th>Reagent</th>'), 'Word-style content exports cleanly to direct Confluence formatted HTML');
 
+  // ---------- Word-style round-trip preserves literal Markdown punctuation ----------
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button[title="Edit this section"]');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button[data-ed-mode="md"]');
+  await page.fill('#labPanel .lab-sec[data-key="conclusions"] textarea', 'Use \\*literal\\* and **bold**.');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button:has-text("Save")');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="conclusions"] .lab-md');
+  // Reopen in Word style, save (including unedited round-trip + edited round-trip), and reopen again
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button[title="Edit this section"]');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button[data-ed-mode="rich"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="conclusions"] .lab-rich:not([hidden])');
+  const litFirst = await page.evaluate(async () => {
+    const ed = await import('./js/labeditor.js');
+    const r = document.querySelector('#labPanel .lab-sec[data-key="conclusions"] .lab-rich');
+    return { text: r.textContent, strong: [...r.querySelectorAll('strong,b')].map(n => n.textContent), em: r.querySelectorAll('em,i').length, serialized: ed.editorHtmlToMd(r) };
+  });
+  ok(litFirst.text.includes('*literal*') && litFirst.strong.includes('bold') && litFirst.em === 0 && litFirst.serialized === 'Use \\*literal\\* and **bold**.', 'unedited Word-style DOM preserves literal asterisks and bold without turning into emphasis');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] .lab-rich');
+  await page.keyboard.press('End');
+  await page.keyboard.type(' Done.');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button:has-text("Save")');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="conclusions"] .lab-md');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button[title="Edit this section"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="conclusions"] .lab-rich:not([hidden])');
+  const litReopen = await page.evaluate(async () => {
+    const L = await import('./js/labnote.js'), e = window.thistleNotebook.lab.activeEntry();
+    const r = document.querySelector('#labPanel .lab-sec[data-key="conclusions"] .lab-rich');
+    return { md: L.cur(e.fields.conclusions), text: r.textContent, strong: [...r.querySelectorAll('strong,b')].map(n => n.textContent), em: r.querySelectorAll('em,i').length };
+  });
+  ok(litReopen.md === 'Use \\*literal\\* and **bold**. Done.' && litReopen.text.includes('*literal*') && litReopen.strong.includes('bold') && litReopen.em === 0, 'after Word-style save and reopen, literal asterisks stay visible, bold stays bold, and no unintended <em> appears');
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] button:has-text("Cancel")');
+
   ok(!errors.length, 'no page errors' + (errors.length ? ': ' + errors.join(' | ') : ''));
   console.log(log.join('\n'));
   await browser.close();

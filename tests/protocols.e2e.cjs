@@ -144,6 +144,49 @@ async function openApp(browser, names) {
   const sys = chats.at(-1).messages[0].content;
   ok(sys.includes('Protocols recorded in this entry') && sys.includes(`### ${KB} (version 4, wiki page "${KB}")`) && sys.includes('Agar recipe v1'), 'Lab notebook mode tells the model the recorded protocols and the library');
 
+  // ---------- insert protocol at caret between two existing sentences in Word style ----------
+  await page.evaluate(() => localStorage.removeItem('tn.labEditorMode'));
+  await page.click('#labPanel .lab-sec[data-key="procedure"] button[title="Edit this section"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="procedure"] .lab-rich:not([hidden])');
+  await page.click('#labPanel .lab-sec[data-key="procedure"] .lab-rich');
+  await page.keyboard.type('First sentence. Second sentence.');
+  await page.click('#labPanel .lab-sec[data-key="procedure"] button:has-text("Save")');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="procedure"] .lab-md');
+  await page.click('#labPanel .lab-sec[data-key="procedure"] button[title="Edit this section"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="procedure"] .lab-rich:not([hidden])');
+  // Place caret explicitly between "First sentence. " and "Second sentence."
+  await page.evaluate(() => {
+    const rich = document.querySelector('#labPanel .lab-sec[data-key="procedure"] .lab-rich');
+    rich.focus();
+    const walk = document.createTreeWalker(rich, NodeFilter.SHOW_TEXT);
+    const tn = walk.nextNode();
+    const pos = tn.nodeValue.indexOf('Second sentence.');
+    const r = document.createRange();
+    r.setStart(tn, pos); r.collapse(true);
+    const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r);
+  });
+  await page.click('#labPanel .lab-edit-tools button:has-text("Protocol")');
+  await page.click('#modalBody .menu-item:has-text("Agar recipe")');
+  await page.click('#modalBody button:has-text("Insert into the text")');
+  await page.click('#labPanel .lab-sec[data-key="procedure"] button:has-text("Save")');
+  await page.waitForFunction(() => window.thistleNotebook.lab._L.note.entries[0].protocolsUsed?.length === 3);
+  // Reopen in Word style and verify both mid-sentence insertion order and recorded protocol ID/version
+  await page.click('#labPanel .lab-sec[data-key="procedure"] button[title="Edit this section"]');
+  await page.waitForSelector('#labPanel .lab-sec[data-key="procedure"] .lab-rich:not([hidden])');
+  const midCheck = await page.evaluate(async () => {
+    const L = await import('./js/labnote.js'), e = window.thistleNotebook.lab._L.note.entries[0];
+    const agar = window.thistleNotebook.protocols._P.all.find(p => p.versions.at(-1).title === 'Agar recipe');
+    const r = document.querySelector('#labPanel .lab-sec[data-key="procedure"] .lab-rich');
+    return { md: L.cur(e.fields.procedure), dom: r.textContent, lastProto: e.protocolsUsed.at(-1), agarId: agar?.id };
+  });
+  const checkOrder = s => {
+    const a = s.indexOf('First sentence.'), b = s.indexOf('Agar recipe'), c = s.indexOf('Adjust pH to 7.5'), d = s.indexOf('Second sentence.');
+    return a >= 0 && b > a && c > b && d > c;
+  };
+  ok(checkOrder(midCheck.md) && checkOrder(midCheck.dom), 'inserting a protocol with the caret between two sentences preserves mid-sentence position across save and reopen');
+  ok(midCheck.lastProto?.id === midCheck.agarId && midCheck.lastProto?.v === 1, 'mid-sentence rich-editor protocol insertion records the exact protocol ID and version');
+  await page.click('#labPanel .lab-sec[data-key="procedure"] button:has-text("Cancel")');
+
   // ---------- delete and restore ----------
   await page.click('#labPanel button:has-text("Protocols")');
   await page.click('#modalBody tr.proto-row:has-text("Agar recipe")'); await page.click('#modalBody button:has-text("Delete")');

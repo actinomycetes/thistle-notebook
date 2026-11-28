@@ -135,30 +135,47 @@ function codeSpanMd(text) {
   return '``' + pad + s + pad + '``';
 }
 
+function escapeInlineMd(text) {
+  const s = String(text || '').replace(/\u00a0/g, ' ').replace(/([\\*`~[\]<])/g, '\\$1');
+  // Escape '_' unless both neighbours are alphanumeric (keeps snake_case_filenames clean while preserving literal _emphasis_ / __bold__)
+  return s.replace(/_/g, (ch, idx, str) => {
+    const prev = str[idx - 1] || '', next = str[idx + 1] || '';
+    return /[A-Za-z0-9]/.test(prev) && /[A-Za-z0-9]/.test(next) ? ch : '\\_';
+  });
+}
+
+function escapeBlockStart(text) {
+  return String(text || '')
+    .replace(/^([ \t]*)(#{1,6})([ \t])/gm, '$1\\$2$3')
+    .replace(/^([ \t]*)>([ \t]|$)/gm, '$1\\>$2')
+    .replace(/^([ \t]*)([+-])([ \t])/gm, '$1\\$2$3')
+    .replace(/^([ \t]*)(\d+)\.([ \t])/gm, '$1$2\\.$3');
+}
+
 function inlineMd(node) {
   if (!node) return '';
-  if (node.nodeType === 3) return (node.nodeValue || '').replace(/\u00a0/g, ' ');
+  if (node.nodeType === 3) return escapeInlineMd(node.nodeValue || '');
   if (node.nodeType !== 1) return '';
   const tag = node.tagName.toUpperCase();
   if (tag === 'BR') return '\n';
   if (tag === 'INPUT' && (node.getAttribute?.('type') || node.type) === 'checkbox') return '';
   if (node.dataset?.tnAtt && (node.classList?.contains('lab-ed-fig') || tag === 'IMG')) {
     const name = node.dataset.tnAtt;
-    const cap = node.dataset.tnCaption ?? node.getAttribute?.('alt') ?? '';
+    const cap = (node.dataset.tnCaption ?? node.getAttribute?.('alt') ?? '').replace(/\]/g, '\\]');
     return `![${cap}](attachment:${name})`;
   }
   if (node.dataset?.tnAtt) {
     const name = node.dataset.tnAtt;
     const label = (node.dataset.tnLabel || node.textContent || name).replace(/^📎\s*/, '').trim() || name;
-    return `[${label}](attachment:${name})`;
+    return `[${label.replace(/\]/g, '\\]')}](attachment:${name})`;
   }
   if (node.dataset?.tnWiki) {
     const target = node.dataset.tnWiki;
     const label = (node.dataset.tnLabel || node.textContent || target).replace(/^📘\s*/, '').trim() || target;
-    return `[${label}](wiki:${target})`;
+    return `[${label.replace(/\]/g, '\\]')}](wiki:${target})`;
   }
   if (tag === 'IMG') {
-    const src = node.getAttribute?.('src') || '', alt = node.getAttribute?.('alt') || '';
+    const src = node.getAttribute?.('src') || '', alt = (node.getAttribute?.('alt') || '').replace(/\]/g, '\\]');
     return src ? `![${alt}](${src})` : '';
   }
   if (tag === 'CODE') return codeSpanMd(node.textContent || '');
@@ -215,7 +232,7 @@ function listMd(list, indent = '') {
 
 function blockMd(node) {
   if (!node) return '';
-  if (node.nodeType === 3) { const t = (node.nodeValue || '').replace(/\u00a0/g, ' ').trim(); return t; }
+  if (node.nodeType === 3) { const t = escapeBlockStart(escapeInlineMd(node.nodeValue || '').trim()); return t; }
   if (node.nodeType !== 1) return '';
   const tag = node.tagName.toUpperCase();
   if (/^H[1-6]$/.test(tag)) {
@@ -240,7 +257,7 @@ function blockMd(node) {
       return blocksMd(node);
     }
     const txt = [...node.childNodes].map(inlineMd).join('').replace(/[ \t]+\n/g, '\n').replace(/^\n+|\n+$/g, '').trim();
-    return txt;
+    return escapeBlockStart(txt);
   }
   return inlineMd(node).trim();
 }
@@ -433,23 +450,54 @@ export function createRichEditor(opts) {
     rememberRange();
   };
 
-  const insertBlockAtCursor = node => {
+  const insertBlocksAtCursor = nodes => {
+    if (!nodes.length) return;
     restoreRange();
     const sel = window.getSelection();
-    let anchor = sel?.rangeCount ? sel.anchorNode : null;
+    const range = sel?.rangeCount && rich.contains(sel.anchorNode) ? sel.getRangeAt(0) : null;
+    let anchor = range ? range.startContainer : null;
     if (anchor && anchor.nodeType === 3) anchor = anchor.parentElement;
     let block = anchor?.closest?.('p,div,h1,h2,h3,h4,li,blockquote,pre,table');
     if (block && block !== rich && rich.contains(block)) {
       if (block.tagName === 'P' && !block.textContent.trim() && !block.querySelector('img,.lab-ed-fig,.lab-ed-att,.lab-ed-wiki')) {
-        block.replaceWith(node);
+        let prev = block;
+        for (const n of nodes) { prev.after(n); prev = n; }
+        block.remove();
+      } else if (range && /^(P|DIV)$/i.test(block.tagName)) {
+        // Split the active paragraph at the caret so multi-block insertions (protocols, tables) land between before- and after-text
+        range.deleteContents();
+        const tailRange = document.createRange();
+        tailRange.setStart(range.endContainer, range.endOffset);
+        tailRange.setEnd(block, block.childNodes.length);
+        const tailFrag = tailRange.extractContents();
+        const hasBefore = !!(block.textContent.trim() || block.querySelector('img,.lab-ed-fig,.lab-ed-att,.lab-ed-wiki'));
+        const hasAfter = !!(tailFrag.textContent.trim() || tailFrag.querySelector?.('img,.lab-ed-fig,.lab-ed-att,.lab-ed-wiki'));
+        let prev = block;
+        for (const n of nodes) { prev.after(n); prev = n; }
+        if (hasAfter) {
+          const afterP = document.createElement('p');
+          afterP.append(tailFrag);
+          prev.after(afterP);
+        }
+        if (!hasBefore) block.remove();
       } else {
-        block.after(node);
+        let prev = block;
+        for (const n of nodes) { prev.after(n); prev = n; }
       }
     } else {
-      rich.append(node);
+      for (const n of nodes) rich.append(n);
+    }
+    const last = nodes[nodes.length - 1];
+    if (last && rich.contains(last)) {
+      const r = document.createRange();
+      r.selectNodeContents(last); r.collapse(false);
+      const s = window.getSelection();
+      if (s) { s.removeAllRanges(); s.addRange(r); }
     }
     ensureTrailingParagraph(rich);
+    rememberRange();
   };
+  const insertBlockAtCursor = node => insertBlocksAtCursor([node]);
 
   const insertMd = mdStr => {
     if (mode === 'md') {
@@ -466,7 +514,7 @@ export function createRichEditor(opts) {
       while (nodes[0].firstChild) frag.append(nodes[0].firstChild);
       insertNodeAtCursor(frag);
     } else {
-      for (const n of nodes) insertBlockAtCursor(n);
+      insertBlocksAtCursor(nodes);
     }
   };
 
@@ -663,19 +711,19 @@ export function createRichEditor(opts) {
     fmtBtn('❝', 'Quote block', () => exec('formatBlock', 'BLOCKQUOTE')),
   ];
 
-  const toolbar = h('div', { class: 'lab-toolbar' },
+  const toolbar = h('div', { class: 'lab-toolbar lab-edit-tools' },
     ...richOnlyControls,
-    h('button', { type: 'button', class: 'btn small', title: 'Insert a table (pick rows and columns)', onmousedown: ev => ev.preventDefault(), onclick: ev => openTablePicker(ev.currentTarget) }, '▦ Table ▾'),
-    entry ? h('button', { type: 'button', class: 'btn small', title: 'Upload or insert a picture at the cursor', onmousedown: ev => ev.preventDefault(), onclick: ev => openMediaPicker(ev.currentTarget, 'image') }, '🖼 Picture ▾') : null,
-    entry ? h('button', { type: 'button', class: 'btn small', title: 'Attach or insert a file link at the cursor', onmousedown: ev => ev.preventDefault(), onclick: ev => openMediaPicker(ev.currentTarget, 'file') }, '📎 File ▾') : null,
+    h('button', { type: 'button', class: 'btn small', title: 'Insert a table (pick rows and columns)', onmousedown: ev => { rememberRange(); ev.preventDefault(); }, onclick: ev => openTablePicker(ev.currentTarget) }, '▦ Table ▾'),
+    entry ? h('button', { type: 'button', class: 'btn small', title: 'Upload or insert a picture at the cursor', onmousedown: ev => { rememberRange(); ev.preventDefault(); }, onclick: ev => openMediaPicker(ev.currentTarget, 'image') }, '🖼 Picture ▾') : null,
+    entry ? h('button', { type: 'button', class: 'btn small', title: 'Attach or insert a file link at the cursor', onmousedown: ev => { rememberRange(); ev.preventDefault(); }, onclick: ev => openMediaPicker(ev.currentTarget, 'file') }, '📎 File ▾') : null,
     entry && openProtocolPicker ? h('button', {
       type: 'button', class: 'btn small', title: 'Insert a protocol from the library (keeps a frozen copy of the version used)',
-      onmousedown: ev => ev.preventDefault(),
+      onmousedown: ev => { rememberRange(); ev.preventDefault(); },
       onclick: () => { rememberRange(); openProtocolPicker((text, snap) => { insertMd(text); pending.push(snap); }); },
     }, '📚 Protocol…') : null,
     h('button', {
       type: 'button', class: 'btn small', title: 'Link to a wiki page by its exact title',
-      onmousedown: ev => ev.preventDefault(),
+      onmousedown: ev => { rememberRange(); ev.preventDefault(); },
       onclick: () => {
         rememberRange();
         const t = prompt('Exact title of the wiki page (e.g. Kirby-Bauer Disk Diffusion Susceptibility Test Protocol). For another space: SPACEKEY:Title');
