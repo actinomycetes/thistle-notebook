@@ -13,7 +13,7 @@ import { parseSpecs, findTable, buildG, tplotFile, ThistlePlot, ThistleFlow, def
 import { createLab } from './labui.js';
 import { createProtocols } from './protocolui.js';
 import { createFolders } from './folders.js';
-import { pageTitle } from './labnote.js';
+import { pageTitle, isFinal } from './labnote.js';
 import { SECTIONS as LAB_SECTIONS } from './labnote.js';
 import { labProtocol } from './prompts.js';
 import * as users from './users.js';
@@ -572,17 +572,27 @@ function messageEl(m) {
 function plainAnswer(m) {
   const c = m.meta?.cites || {};
   return String(m.content).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/<think>[\s\S]*?(<\/think>|$)/g, '')
-    .replace(/\[((?:\d+)(?:\s*[,;–-]\s*\d+)*)\]/g, (all, g) => { const ns = g.match(/\d+/g).map(Number).filter(n => c[n]); return ns.length ? `(${ns.map(n => `${c[n].source}, ${c[n].loc}`).join('; ')})` : all; })
+    .replace(/\[((?:\d+)(?:\s*[,;–-]\s*\d+)*)\]/g, (all, g) => {
+      const ns = [];
+      for (const part of g.split(/[,;]/)) {
+        const rm = /^\s*(\d+)\s*[–-]\s*(\d+)\s*$/.exec(part);
+        if (rm) { const a = +rm[1], b = Math.min(+rm[2], a + 30); for (let n = a; n <= b; n++) if (c[n] && !ns.includes(n)) ns.push(n); }
+        else { const n = +part.trim(); if (c[n] && !ns.includes(n)) ns.push(n); }
+      }
+      return ns.length ? `(${ns.map(n => `${c[n].source}, ${c[n].loc}`).join('; ')})` : all;
+    })
     .trim();
 }
 function labAddMenu(anchor, getMd, note, { attach } = {}) {
   const e = S.lab.activeEntry(), pop = $('#popover'); pop.innerHTML = '';
   if (!e) { toast('Create an assay entry first (＋ New assay in the Lab note pane)', true); showRightTab('lab'); return; }
-  pop.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, 'Add to which section of the current entry?'),
+  const fin = isFinal(e);
+  pop.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, fin ? 'Entry is finalised — add as amendment to which section?' : 'Add to which section of the current entry?'),
     ...S.lab.sections().map(k => h('button', { class: 'menu-item', onclick: async () => {
       pop.hidden = true;
       let md = getMd();
-      if (attach) { const f = attach(), [name] = await S.lab.addAttachments(e, [f], { quiet: true }); if (name) md += `\n\n![${f.caption || name}](attachment:${name})`; }
+      if (attach && !fin) { const f = attach(), [name] = await S.lab.addAttachments(e, [f], { quiet: true }); if (name) md += `\n\n![${f.caption || name}](attachment:${name})`; }
+      else if (attach && fin) toast('Entry is finalised: text will be added as an amendment (new attachments cannot be added to a sealed entry)');
       if (await S.lab.addToSection(k, md, `added ${note}`)) showRightTab('lab');
     } }, h('span', {}, LAB_SECTIONS[k].label)))));
   pop.hidden = false; const r = anchor.getBoundingClientRect();

@@ -1,6 +1,7 @@
 // Markdown rendering (marked + DOMPurify), citation chips, and Markdown → Word (.docx) export.
 import { zip } from './zip.js';
 import { esc } from './util.js';
+import { fixTargets } from './labnote.js';
 
 export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, labSlot, tableTools } = {}) {
   let src = String(text || '');
@@ -59,6 +60,7 @@ function runs(tokens, fmt = {}) {
   for (const t of tokens || []) {
     if (t.type === 'strong') out += runs(t.tokens, { ...fmt, b: 1 });
     else if (t.type === 'em') out += runs(t.tokens, { ...fmt, i: 1 });
+    else if (t.type === 'del') out += runs(t.tokens, { ...fmt, s: 1 });
     else if (t.type === 'codespan') out += run(t.text, { ...fmt, code: 1 });
     else if (t.type === 'link') {
       const href = t.href || '';
@@ -75,17 +77,21 @@ function runs(tokens, fmt = {}) {
 }
 const decode = s => { const d = document.createElement('textarea'); d.innerHTML = s; return d.value; };
 function run(text, f) {
-  const pr = (f.b ? '<w:b/>' : '') + (f.i ? '<w:i/>' : '') + (f.u ? '<w:u w:val="single"/>' : '') + (f.code ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>' : '');
+  const pr = (f.b ? '<w:b/>' : '') + (f.i ? '<w:i/>' : '') + (f.s ? '<w:strike/>' : '') + (f.u ? '<w:u w:val="single"/>' : '') + (f.code ? '<w:rFonts w:ascii="Consolas" w:hAnsi="Consolas"/>' : '');
   return `<w:r>${pr ? `<w:rPr>${pr}</w:rPr>` : ''}<w:t xml:space="preserve">${X(text)}</w:t></w:r>`;
 }
 // Embedded pictures (v0.9): attachment images in lab-note entries. IMGS is set per document by markdownToDocx.
 let IMGS = { map: new Map(), used: [] };
+let PAGE_W = 9638, PAGE_H = 14570;
 function image(t, fmt) {
   const href = t.href || '', name = href.startsWith('attachment:') ? decodeURIComponent(href.slice(11)) : null, img = name && IMGS.map.get(name);
   if (!img) return run(`[image: ${t.text || name || href}]`, { ...fmt, i: 1 });
   let k = IMGS.used.findIndex(u => u.name === name);
   if (k < 0) { IMGS.used.push({ name, ...img }); k = IMGS.used.length - 1; }
-  const maxW = PAGE_W * 635, emuW = Math.min(maxW, Math.round((img.w || 600) * 9525)), emuH = Math.round(emuW * ((img.h || 400) / (img.w || 600)));
+  const maxW = PAGE_W * 635, maxH = Math.round(PAGE_H * 635 * 0.85);
+  const natW = Math.max(1, img.w || 600), natH = Math.max(1, img.h || 400);
+  const scale = Math.min(1, maxW / (natW * 9525), maxH / (natH * 9525));
+  const emuW = Math.max(1, Math.round(natW * 9525 * scale)), emuH = Math.max(1, Math.round(natH * 9525 * scale));
   const id = 100 + IMGS.drawings++;
   return `<w:r><w:drawing><wp:inline distT="0" distB="0" distL="0" distR="0"><wp:extent cx="${emuW}" cy="${emuH}"/><wp:docPr id="${id}" name="${X(name)}" descr="${X(t.text || name)}"/>`
     + `<a:graphic xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main"><a:graphicData uri="http://schemas.openxmlformats.org/drawingml/2006/picture"><pic:pic xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture">`
@@ -94,15 +100,14 @@ function image(t, fmt) {
 }
 const para = (inner, style) => `<w:p>${style ? `<w:pPr><w:pStyle w:val="${style}"/></w:pPr>` : ''}${inner}</w:p>`;
 
-// Usable text width in twips (A4, 2 cm margins): portrait 9638, landscape 14570. Set per document in markdownToDocx.
-let PAGE_W = 9638;
+// Usable text dimensions in twips (A4, 2 cm margins): portrait 9638×14570, landscape 14570×9638. Set per document in markdownToDocx.
 function blocks(tokens, depth = 0) {
   let out = '';
   for (const t of tokens) {
     if (t.type === 'heading') out += para(runs(t.tokens), `Heading${Math.min(t.depth, 4)}`);
     else if (t.type === 'paragraph' || t.type === 'text') out += para(runs(t.tokens || [{ type: 'text', text: t.text }]));
     else if (t.type === 'list') t.items.forEach((it, i) => {
-      const bullet = (t.ordered ? `${(t.start || 1) + i}. ` : '• ');
+      const bullet = it.task ? (it.checked ? '☑ ' : '☐ ') : (t.ordered ? `${(t.start || 1) + i}. ` : '• ');
       const [first, ...rest] = it.tokens;
       out += `<w:p><w:pPr><w:ind w:left="${360 * (depth + 1)}" w:hanging="260"/></w:pPr>${run(bullet, {})}${runs(first?.tokens || [{ type: 'text', text: first?.text || '' }])}</w:p>`;
       out += blocks(rest, depth + 1);
@@ -125,11 +130,11 @@ function blocks(tokens, depth = 0) {
 /** images: Map of attachment name → {data: Uint8Array, type, w, h} (pixels), for ![caption](attachment:name) */
 export function markdownToDocx(md, title = '', { images = new Map() } = {}) {
   IMGS = { map: images, used: [], drawings: 0 };
-  const src = String(md).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, '').replace(/\]\((attachment|wiki):([^)\n]+)\)/g, (_, k, t) => `](${k}:${encodeURIComponent(t.trim().replace(/^<|>$/g, ''))})`);
+  const src = fixTargets(String(md).replace(/```(thistle-plot|lab-note)[\s\S]*?```/g, ''));
   const tokens = window.marked.lexer(src, { gfm: true, breaks: true });
   // Wide tables (more than 5 columns) get landscape pages
   const wide = tokens.some(function f(t) { return (t.type === 'table' && t.header.length > 5) || (t.tokens || t.items || []).some(f); });
-  PAGE_W = wide ? 14570 : 9638;
+  PAGE_W = wide ? 14570 : 9638; PAGE_H = wide ? 9638 : 14570;
   const body = (title ? para(run(title, {}), 'Title') : '') + blocks(tokens);
   const pg = wide ? '<w:pgSz w:w="16838" w:h="11906" w:orient="landscape"/>' : '<w:pgSz w:w="11906" w:h="16838"/>';
   const doc = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><w:document xmlns:w="http://schemas.openxmlformats.org/wordprocessingml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships" xmlns:wp="http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing" xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" xmlns:pic="http://schemas.openxmlformats.org/drawingml/2006/picture"><w:body>${body}<w:sectPr>${pg}<w:pgMar w:top="1134" w:right="1134" w:bottom="1134" w:left="1134" w:header="708" w:footer="708" w:gutter="0"/></w:sectPr></w:body></w:document>`;
