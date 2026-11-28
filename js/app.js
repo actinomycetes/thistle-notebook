@@ -1377,7 +1377,7 @@ async function init() {
   S.tf = new ThistleFlow(S.settings.tfUrl || defaultSuiteUrl('thistle-flow'), $('#tfHost'));
   renderStudio();
   S.lab = createLab({
-    h, $, db, toast, modal, closeModal, uid, saveBlob, saveText, safeName, fmtBytes, pickFiles, author, wikiUrl,
+    h, $, db, toast, modal, closeModal, uid, saveBlob, saveText, safeName, fmtBytes, pickFiles, isIOS: IS_IOS, author, wikiUrl,
     nb: () => S.nb, touch: () => saveNb(), protocols: () => S.protocols, markdownToDocx, userName, attachmentsMacro: () => S.settings.wikiAttachmentsMacro === 'yes',
     autoApply: () => !!S.settings.labAutoApply, setAutoApply: v => { S.settings.labAutoApply = v; saveSettings(S.settings); },
     saveMessage: m => db.put('messages', m),
@@ -1441,7 +1441,7 @@ async function init() {
   $('#btnTheme').onclick = () => { const t = document.documentElement.dataset.theme === 'dark' ? 'light' : 'dark'; document.documentElement.dataset.theme = t; localStorage.setItem('tn.theme', t); $('#btnTheme').textContent = t === 'dark' ? '🌙' : '☀️'; };
   $('#modalClose').onclick = closeModal;
   $('#modal').onclick = e => { if (e.target.id === 'modal') closeModal(); };
-  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn,#btnHistory,.tabs-btn,#btnUser,.lab-add-btn,.lab-menu-btn,.lab-edit-tools')) $('#popover').hidden = true; });
+  document.addEventListener('click', e => { if (!e.target.closest('#popover,.cite,.export-btn,#btnHistory,.tabs-btn,#btnUser,.lab-add-btn,.lab-menu-btn,.lab-edit-tools,.lab-toolbar')) $('#popover').hidden = true; });
   document.addEventListener('keydown', e => {
     if (e.key === 'F1' || ((e.metaKey || e.ctrlKey) && e.key === '/')) { e.preventDefault(); helpDialog(); }
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 's') { e.preventDefault(); saveTnote(); }

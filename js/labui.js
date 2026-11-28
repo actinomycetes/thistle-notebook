@@ -6,6 +6,7 @@ import {
   pageTitle, changeLog, fmtTime, parseLabUpdates, entryToWiki, studyToWiki, entryToHtml, entryToMarkdown,
   isFinal, finalEvent, witnesses, sealPayload, legacySealPayload, sha256Hex, sealShort, fixTargets,
 } from './labnote.js';
+import { createRichEditor } from './labeditor.js';
 import { zip } from './zip.js';
 
 export function createLab(ctx) {
@@ -151,7 +152,7 @@ export function createLab(ctx) {
     const locked = !!(entry && (isDeleted(entry) || isFinal(entry)));
     const editing = !locked && L.editing === key;
     box.append(h('div', { class: 'lab-sec-head' }, h('b', {}, label), h('small', { class: 'hint' }, lastRevLine(field)), h('span', { class: 'grow' }),
-      editing || locked ? null : h('button', { class: 'icon', title: 'Edit this section', onclick: () => { L.editing = key; render(); setTimeout(() => panel().querySelector(`.lab-sec[data-key="${key}"] textarea`)?.focus(), 30); } }, '✎'),
+      editing || locked ? null : h('button', { class: 'icon', title: 'Edit this section', onclick: () => { L.editing = key; render(); setTimeout(() => panel().querySelector(`.lab-sec[data-key="${key}"] .lab-rich:not([hidden]), .lab-sec[data-key="${key}"] textarea:not([hidden])`)?.focus(), 30); } }, '✎'),
       field?.revs?.length ? h('button', { class: 'icon', title: 'All versions of this section', onclick: () => historyDialog(field, label, entry) }, '🕘') : null));
     if (editing) box.append(editorEl(field, key, entry, study));
     else {
@@ -166,35 +167,24 @@ export function createLab(ctx) {
     return box;
   }
   function editorEl(field, key, entry) {
-    const pending = []; // protocols inserted in this edit: recorded in the entry when it is saved
-    const ta = h('textarea', { class: 'lab-ta', rows: Math.min(18, Math.max(5, cur(field).split('\n').length + 2)), placeholder: 'Markdown: **bold**, - lists, | tables |, [protocol](wiki:Page title), ![figure](attachment:file.png)' });
-    ta.value = cur(field);
-    const saveIt = async () => {
+    const saveIt = async (mdText, pending) => {
       if (entry && (isDeleted(entry) || isFinal(entry))) { L.editing = null; render(); return toast('This entry is locked and cannot be edited directly', true); }
       const who = await ctx.author(); if (!who) return;
-      const r = revise(field, ta.value, who, 'edit');
-      if (r && entry) for (const snap of pending) if (ta.value.includes(snap.title)) recordProtocol(entry, snap, who);
+      const r = revise(field, mdText, who, 'edit');
+      if (r && entry) for (const snap of pending) if (mdText.includes(snap.title)) recordProtocol(entry, snap, who);
       L.editing = null; if (r) await save(); render();
       if (r) toast('Saved (earlier versions are kept: 🕘)');
     };
-    ta.onkeydown = ev => { if (ev.key === 'Enter' && (ev.ctrlKey || ev.metaKey)) { ev.preventDefault(); saveIt(); } if (ev.key === 'Escape') { ev.stopPropagation(); L.editing = null; render(); } };
-    const insert = s => { const a = ta.selectionStart, b = ta.selectionEnd; ta.value = ta.value.slice(0, a) + s + ta.value.slice(b); ta.focus(); ta.selectionStart = ta.selectionEnd = a + s.length; };
-    return h('div', { class: 'lab-edit' }, ta, h('div', { class: 'lab-edit-tools' },
-      entry ? h('button', { class: 'btn small', title: 'Insert a protocol from the library (the entry keeps a frozen copy of the version used)', onclick: () => ctx.protocols().insertDialog(entry, (text, snap) => { insert(text); pending.push(snap); }) }, '📚 Protocol…') : null,
-      entry ? h('button', { class: 'btn small', title: 'Insert a link to, or image of, one of this entry\'s attachments', onclick: ev => attachmentPicker(ev.currentTarget, entry, insert) }, '📎 Attachment ▾') : null,
-      h('button', { class: 'btn small', title: 'Link to a wiki page by its exact title (e.g. a protocol page)', onclick: () => { const t = prompt('Exact title of the wiki page (e.g. Kirby-Bauer Disk Diffusion Susceptibility Test Protocol). For another space: SPACEKEY:Title'); if (t && t.trim()) insert(`[${t.trim().replace(/^[A-Z0-9]+:/, '')}](wiki:${t.trim()})`); } }, '📘 Wiki link'),
-      h('span', { class: 'hint' }, 'Ctrl/⌘+Enter saves'), h('span', { class: 'grow' }),
-      h('button', { class: 'btn small', onclick: () => { L.editing = null; render(); } }, 'Cancel'),
-      h('button', { class: 'btn small primary', onclick: saveIt }, 'Save')));
-  }
-  function attachmentPicker(anchor, entry, insert) {
-    const fs = filesOf(entry.id), pop = $('#popover'); pop.innerHTML = '';
-    pop.append(h('div', { class: 'menu' }, h('div', { class: 'menu-head' }, fs.length ? 'Insert a reference to an attachment' : 'This entry has no attachments yet (add them below the sections)'),
-      ...fs.flatMap(f => [
-        /^image\//.test(f.type) ? h('button', { class: 'menu-item', onclick: () => { pop.hidden = true; insert(`![${f.name.replace(/\.\w+$/, '')}](attachment:${f.name})`); } }, h('span', {}, `🖼 Show image: ${f.name}`)) : null,
-        h('button', { class: 'menu-item', onclick: () => { pop.hidden = true; insert(`[${f.name}](attachment:${f.name})`); } }, h('span', {}, `📎 Link: ${f.name}`))].filter(Boolean))));
-    pop.hidden = false; const r = anchor.getBoundingClientRect();
-    pop.style.left = Math.max(8, Math.min(r.left, innerWidth - pop.offsetWidth - 10)) + 'px'; pop.style.top = (r.bottom + 4) + 'px';
+    const ed = createRichEditor({
+      h, $, initialMd: cur(field), entry,
+      placeholder: SECTIONS[key]?.hint || STUDY_FIELDS[key.replace(/^study:/, '')]?.hint || '',
+      findFile, fileUrl, wikiUrl: ctx.wikiUrl, filesOf,
+      pickFiles: ctx.pickFiles, isIOS: !!ctx.isIOS, addAttachments, toast,
+      openProtocolPicker: entry ? cb => ctx.protocols().insertDialog(entry, cb) : null,
+      onSave: saveIt,
+      onCancel: () => { L.editing = null; render(); },
+    });
+    return ed.el;
   }
 
   function recordProtocol(e, snap, who) {
@@ -258,21 +248,22 @@ export function createLab(ctx) {
   /** Amendment to a finalised entry: dated, signed, with a reason; never changes the sealed text. */
   async function amendmentDialog(e, { section = '', text = '', onSaved = null } = {}) {
     const sec = h('select', {}, h('option', { value: '' }, '(whole entry)'), entrySections(e).map(k => h('option', { value: k, selected: k === section }, SECTIONS[k].label)));
-    const ta = h('textarea', { class: 'lab-ta', rows: 6, placeholder: 'The correction or addition (Markdown)' }); ta.value = text;
+    const ed = createRichEditor({ h, $, initialMd: text, placeholder: 'The correction or addition', wikiUrl: ctx.wikiUrl, compact: true });
     const why = h('input', { type: 'text', placeholder: 'Reason, e.g. transcription error in zone size for plate B' });
     modal(`＋ Amendment to “${pageTitle(e)}”`, h('div', {},
-      h('div', { class: 'form-grid' }, h('label', {}, 'Section'), sec, h('label', {}, 'Reason'), why), ta,
+      h('div', { class: 'form-grid' }, h('label', {}, 'Section'), sec, h('label', {}, 'Reason'), why), ed.el,
       h('p', { class: 'hint' }, 'The finalised text stays as it was; the amendment is added below it with your name, the time and the reason.'),
       h('div', { class: 'modal-foot' }, h('button', { class: 'btn', onclick: closeModal }, 'Cancel'), h('button', { class: 'btn primary', onclick: async () => {
-        if (!ta.value.trim()) { ta.focus(); return; }
+        const mdText = ed.getMarkdown().trim();
+        if (!mdText) { ed.focus(); return; }
         if (!why.value.trim()) { why.focus(); return toast('Give a reason for the amendment', true); }
         const who = await ctx.author(); if (!who) return;
-        (e.amendments ||= []).push({ t: Date.now(), author: who, section: sec.value, text: ta.value.trim(), reason: why.value.trim() });
+        (e.amendments ||= []).push({ t: Date.now(), author: who, section: sec.value, text: mdText, reason: why.value.trim() });
         e.events.push({ t: Date.now(), author: who, what: 'amendment added' });
         await save(); closeModal(); render(); toast('Amendment added');
         if (onSaved) await onSaved();
       } }, 'Add amendment'))));
-    setTimeout(() => (text ? why : ta).focus(), 50);
+    setTimeout(() => (text ? why : ed).focus(), 50);
     return true;
   }
   async function wordExport(e) {
@@ -347,7 +338,7 @@ export function createLab(ctx) {
     for (let i = 2; ; i++) { const n = `${m[1]} (${i})${m[2] || ''}`; if (!taken.has(n.toLowerCase())) return n; }
   }
   /** files: File or {blob, name, type}. Returns the stored names (renamed if the name was taken: nothing is overwritten). */
-  async function addAttachments(e, files, { quiet = false } = {}) {
+  async function addAttachments(e, files, { quiet = false, skipRender = false } = {}) {
     if (!e || isDeleted(e)) return [];
     if (isFinal(e)) { toast('This entry is finalised: new attachments cannot be added to a sealed entry', true); return []; }
     const who = await ctx.author(); if (!who) return [];
@@ -358,7 +349,9 @@ export function createLab(ctx) {
       await db.put('files', rec); L.files.push(rec); names.push(name);
       (e.events ||= []).push({ t: Date.now(), author: who, what: 'attachment added', name });
     }
-    await save(); render();
+    await save();
+    if (skipRender) { const oldAtt = panel()?.querySelector('.lab-att'); if (oldAtt) oldAtt.replaceWith(attachmentsEl(e)); }
+    else render();
     if (!quiet) toast(`Attached ${names.length} file(s)`);
     return names;
   }
