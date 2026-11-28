@@ -184,7 +184,7 @@ async function openApp(browser, names) {
     return a >= 0 && b > a && c > b && d > c;
   };
   ok(checkOrder(midCheck.md) && checkOrder(midCheck.dom), 'inserting a protocol with the caret between two sentences preserves mid-sentence position across save and reopen');
-  ok(midCheck.lastProto?.id === midCheck.agarId && midCheck.lastProto?.v === 1, 'mid-sentence rich-editor protocol insertion records the exact protocol ID and version');
+  ok(midCheck.lastProto?.pid === midCheck.agarId && midCheck.lastProto?.v === 1, 'mid-sentence rich-editor protocol insertion records the exact protocol ID and version');
   await page.click('#labPanel .lab-sec[data-key="procedure"] button:has-text("Cancel")');
 
   // ---------- delete and restore ----------
