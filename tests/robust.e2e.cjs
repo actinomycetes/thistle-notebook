@@ -260,6 +260,60 @@ let fails = 0; const ok = (c, m) => { console.log((c ? 'PASS ' : 'FAIL ') + m); 
   ok(big.afterRead && !big.usedBeforeRead && Number(big.firstValue) === 99 && big.accepted, 'large table changes only after a successful re-read ' + JSON.stringify(big));
   ok(!big.saved2, 'and it still stays out of the saved notebook');
 
+  // ---- citations, Excel/Word XML validity, zip/unzip hardening, and atomic importNotebook ----
+  const io = await page.evaluate(async () => {
+    const S = window.thistleNotebook;
+    const { tablesToXlsx } = await import('./js/export.js');
+    const { markdownToDocx } = await import('./js/md.js');
+    const { zip, unzip } = await import('./js/zip.js');
+    const db = await import('./js/store.js');
+
+    const nums = S._t.citedNumbers('See [1-4] and [6; 8–9].');
+    const sh = S._t.sourcesSheet({
+      content: '<think>hidden [1]</think>\n```thistle-plot\n{"a":[2]}\n```\nShown [3].',
+      cites: { 1: { source: 'h.pdf', loc: 'p1', text: 'h' }, 2: { source: 'j.pdf', loc: 'p1', text: 'j' }, 3: { source: 'v.pdf', loc: 'p1', text: 'v' } },
+    });
+    const shifted = S._t.shiftCites('Year [2024] and cite [1, 2].', { 1: {}, 2: {} }, 5);
+
+    const xb = tablesToXlsx([
+      { title: 'History', header: ['A'], rows: [['1']] },
+      { title: "'Quoted'", header: ['A'], rows: [['1']] },
+      { title: '\x01\x0c', header: ['A'], rows: [['1']] },
+    ]);
+    const xz = await unzip(new Uint8Array(await xb.arrayBuffer()));
+    const wbXml = await xz.text('xl/workbook.xml');
+
+    const dbBlob = markdownToDocx('Hello\x0cWorld `a < b & c`', 'T\x01');
+    const dz = await unzip(new Uint8Array(await dbBlob.arrayBuffer()));
+    const docXml = await dz.text('word/document.xml');
+
+    const zBlob = zip([{ name: 'café.txt', data: 'hi' }]);
+    const zBytes = new Uint8Array(await zBlob.arrayBuffer());
+    const dv = new DataView(zBytes.buffer);
+    const utf8Flag = dv.getUint16(6, true) & 0x0800;
+    const dosDate = dv.getUint16(12, true);
+    const zz = await unzip(zBytes);
+    const protoSafe = zz.has('toString') === false && (await zz.bytes('toString')) === null;
+    const corrupted = zBytes.slice();
+    corrupted[30 + new TextEncoder().encode('café.txt').length] ^= 0xff;
+    let crcErr = '';
+    try { const cz = await unzip(corrupted); await cz.bytes('café.txt'); } catch (e) { crcErr = e.message; }
+
+    const nBefore = (await db.listNotebooks()).length;
+    let impErr = '';
+    try { await db.importNotebook({ notebook: { name: 'BadImport' }, chunks: [{ src: 's1', emb: '!!!not-valid-base64!!!' }] }); } catch (e) { impErr = e.message; }
+    const nAfter = (await db.listNotebooks()).length;
+
+    return { nums, shRows: sh[0]?.rows?.map(r => r[0]), shifted, wbXml, docXml, utf8Flag, dosDate, protoSafe, crcErr, impErr, noOrphan: nBefore === nAfter };
+  });
+  ok(JSON.stringify(io.nums) === '[1,2,3,4,6,8,9]', 'citedNumbers expands ranges and semicolons ' + JSON.stringify(io.nums));
+  ok(JSON.stringify(io.shRows) === '["[3]"]', 'sourcesSheet strips <think> and thistle-plot blocks ' + JSON.stringify(io.shRows));
+  ok(io.shifted === 'Year [2024] and cite [6, 7].', 'Studio shiftCites leaves non-citation years like [2024] untouched ' + io.shifted);
+  ok(/name="History 1"/.test(io.wbXml) && /name="Quoted"/.test(io.wbXml) && /name="Table 3"/.test(io.wbXml), 'Excel sheetNames sanitizes History, quotes, and control-only names');
+  ok(!/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/.test(io.docXml) && io.docXml.includes('a &lt; b &amp; c') && !io.docXml.includes('&amp;lt;'), 'Word export strips control chars and does not double-escape inline code');
+  ok(io.utf8Flag === 0x0800 && io.dosDate > 0 && io.protoSafe && /CRC|mismatch/i.test(io.crcErr), 'zip/unzip sets UTF-8 flag + DOS date, avoids prototype collisions, and verifies CRC32');
+  ok(io.impErr && io.noOrphan, 'failed importNotebook leaves no orphaned notebook in IndexedDB');
+
   // ---- on-campus audio privacy guard, <think> table export index, tpCell, and busy nav lock ----
   const guards = await page.evaluate(async () => {
     const S = window.thistleNotebook;

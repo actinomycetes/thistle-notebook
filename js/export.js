@@ -67,8 +67,23 @@ function sheetXml(header, rows) {
 function sheetNames(titles) {
   const used = new Set();
   return titles.map((t, i) => {
-    let n = String(t || `Table ${i + 1}`).replace(/[\[\]:*?/\\]/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 28) || `Table ${i + 1}`;
-    let k = n, j = 2; while (used.has(k.toLowerCase())) k = `${n.slice(0, 26)} ${j++}`;
+    let n = String(t ?? '')
+      .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')
+      .replace(/[\[\]:*?/\\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim()
+      .replace(/^'+|'+$/g, '')
+      .trim()
+      .slice(0, 28)
+      .replace(/'+$/g, '')
+      .trim();
+    if (!n) n = `Table ${i + 1}`;
+    if (n.toLowerCase() === 'history') n = `${n} 1`;
+    let k = n, j = 2;
+    while (used.has(k.toLowerCase())) {
+      const base = n.slice(0, 26).replace(/'+$/g, '').trim() || `Table ${i + 1}`;
+      k = `${base} ${j++}`;
+    }
     used.add(k.toLowerCase()); return k;
   });
 }

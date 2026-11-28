@@ -28,7 +28,7 @@ export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, l
       const ids = [];
       m[1].split(/\s*[,;]\s*/).forEach(part => {
         const r = part.match(/^(W?)(\d+)\s*[–-]\s*W?(\d+)$/);
-        if (r) for (let i = +r[2]; i <= Math.min(+r[3], +r[2] + 30); i++) ids.push(r[1] + i); else ids.push(part.trim());
+        if (r) for (let i = +r[2]; i <= Math.min(+r[3], +r[2] + 30, Number.MAX_SAFE_INTEGER); i++) ids.push(r[1] + i); else ids.push(part.trim());
       });
       const wrap = document.createElement('span'); wrap.className = 'cites';
       ids.forEach(id => {
@@ -57,14 +57,14 @@ export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, l
 }
 
 // ---------------- Markdown -> .docx ----------------
-const X = s => esc(s).replace(/&#39;/g, '&apos;');
+const X = s => esc(String(s ?? '').replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, '')).replace(/&#39;/g, '&apos;');
 function runs(tokens, fmt = {}) {
   let out = '';
   for (const t of tokens || []) {
     if (t.type === 'strong') out += runs(t.tokens, { ...fmt, b: 1 });
     else if (t.type === 'em') out += runs(t.tokens, { ...fmt, i: 1 });
     else if (t.type === 'del') out += runs(t.tokens, { ...fmt, s: 1 });
-    else if (t.type === 'codespan') out += run(t.text, { ...fmt, code: 1 });
+    else if (t.type === 'codespan') out += run(decode(t.text), { ...fmt, code: 1 });
     else if (t.type === 'link') {
       const href = t.href || '';
       if (href.startsWith('attachment:')) out += runs(t.tokens, fmt) + run(` (attachment ${decodeURIComponent(href.slice(11))})`, { ...fmt, i: 1 });

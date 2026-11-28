@@ -18,8 +18,9 @@ function db() {
         if (s === 'chunks') os.createIndex('src', 'src');
       }
     };
-    r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
-  });
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => { dbp = null; rej(r.error); };
+  }).catch(e => { dbp = null; throw e; });
 }
 const wrap = r => new Promise((res, rej) => { r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error); });
 async function tx(store, mode = 'readonly') { return (await db()).transaction(store, mode).objectStore(store); }
@@ -92,9 +93,8 @@ export async function importNotebook(d) {
   const map = new Map(), newNb = uid();
   const now = Date.now(), nb = { ...d.notebook, id: newNb, updated: now, savedAt: now }; // just opened from a file = nothing unsaved
   const re = id => { if (!map.has(id)) map.set(id, uid()); return map.get(id); };
-  await put('notebooks', nb);
-  await putMany('sources', (d.sources || []).map(s => ({ ...s, id: re(s.id), nb: newNb })));
-  await putMany('chunks', (d.chunks || []).map(c => ({ ...c, id: uid(), src: re(c.src), nb: newNb, emb: c.emb ? b64ToF32(c.emb) : null })));
+  const sources = (d.sources || []).map(s => ({ ...s, id: re(s.id), nb: newNb }));
+  const chunks = (d.chunks || []).map(c => ({ ...c, id: uid(), src: re(c.src), nb: newNb, emb: c.emb ? b64ToF32(c.emb) : null }));
   // citations and answer metadata point at sources by id: give them the new ids too (v0.6.2)
   const remapMeta = meta => {
     if (!meta) return meta;
@@ -103,10 +103,27 @@ export async function importNotebook(d) {
     if (Array.isArray(meta.sourceIds)) out.sourceIds = meta.sourceIds.map(id => map.get(id) || id);
     return out;
   };
-  await putMany('messages', (d.messages || []).map(m => ({ ...m, id: uid(), nb: newNb, meta: remapMeta(m.meta) })));
-  await putMany('notes', (d.notes || []).map(n => ({ ...n, id: uid(), nb: newNb, meta: remapMeta(n.meta) })));
-  if (d.labnote) await put('labnotes', { ...d.labnote, id: newNb, nb: newNb });
-  await putMany('files', (d.files || []).map(f => { const { data, ...rest } = f; return { ...rest, id: uid(), nb: newNb, blob: b64ToBlob(data, f.type) }; }));
+  const messages = (d.messages || []).map(m => ({ ...m, id: uid(), nb: newNb, meta: remapMeta(m.meta) }));
+  const notes = (d.notes || []).map(n => ({ ...n, id: uid(), nb: newNb, meta: remapMeta(n.meta) }));
+  const labnote = d.labnote ? { ...d.labnote, id: newNb, nb: newNb } : null;
+  const files = (d.files || []).map(f => { const { data, ...rest } = f; return { ...rest, id: uid(), nb: newNb, blob: b64ToBlob(data, f.type) }; });
+  const t = (await db()).transaction(['notebooks', 'sources', 'chunks', 'messages', 'notes', 'labnotes', 'files'], 'readwrite');
+  const done = new Promise((res, rej) => {
+    t.oncomplete = res;
+    t.onabort = () => rej(t.error || new Error('Importing the notebook was cancelled.'));
+    t.onerror = () => rej(t.error || new Error('Could not save the imported notebook.'));
+  });
+  try {
+    t.objectStore('notebooks').put(nb);
+    const putAll = (store, list) => { const os = t.objectStore(store); list.forEach(o => os.put(o)); };
+    putAll('sources', sources);
+    putAll('chunks', chunks);
+    putAll('messages', messages);
+    putAll('notes', notes);
+    if (labnote) t.objectStore('labnotes').put(labnote);
+    putAll('files', files);
+  } catch (e) { t.abort(); await done.catch(() => {}); throw e; }
+  await done;
   return nb;
 }
 

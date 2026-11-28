@@ -125,7 +125,7 @@ async function docx(file) {
 function tableToMd(t) {
   const rows = [...t.querySelectorAll('tr')].map(tr => [...tr.children].map(c => c.textContent.trim().replace(/\s+/g, ' ').replace(/\|/g, '/')));
   if (!rows.length) return '';
-  const n = Math.max(...rows.map(r => r.length));
+  const n = rows.reduce((width, row) => Math.max(width, row.length), 0);
   return [rows[0], Array(n).fill('---'), ...rows.slice(1)].map(r => '| ' + r.join(' | ') + ' |').join('\n');
 }
 
@@ -147,21 +147,24 @@ async function pptx(file) {
 }
 
 // ---------------- tables ----------------
+const MISSING = /^(na|n\/a|#n\/a|nan|null|none|-)$/i;
+const THOU_NUM = /^[-+]?[1-9]\d{0,2}(,\d{3})+(\.\d+)?$/;
+const PLAIN_NUM = /^[-+]?(\d+\.?\d*|\.\d+)(e[-+]?\d+)?$/i;
 function typed(v) {
   if (v == null) return null;
-  if (typeof v === 'number') return v;
+  if (typeof v === 'number') return Number.isFinite(v) ? v : null;
   const s = String(v).trim();
-  if (s === '' || /^(na|n\/a|nan|null|none|-)$/i.test(s)) return null;
+  if (s === '' || MISSING.test(s)) return null;
   if (/^[-+]?0\d+$/.test(s)) return s; // identifiers such as 001 keep their text (v0.6.0: 001 and 1 became one subject)
-  const n = Number(s.replace(/,(?=\d{3}\b)/g, ''));
-  return isFinite(n) && /^[-+]?[\d.,]+(e[-+]?\d+)?%?$/i.test(s) ? n : s;
+  if (THOU_NUM.test(s)) { const n = Number(s.replace(/,/g, '')); return Number.isFinite(n) ? n : s; }
+  if (PLAIN_NUM.test(s)) { const n = Number(s); return Number.isFinite(n) ? n : s; }
+  return s;
 }
 // Keeps the spelling of cells whose typed value would change it (1e3 → 1000), so category columns (subjects, groups)
-// can use the original text (buildG). Missing-value markers (NA, n/a, -) stay missing. In columns that look like
+// can use the original text (buildG). Missing-value markers (NA, n/a, #N/A, -) stay missing. In columns that look like
 // measurements (most filled cells are decimals) only spellings that would otherwise collide are kept: two different
 // texts that read as the same number (1.1 and 1.10) would merge two subjects or groups. Formatting that changes nothing
 // (12.300 alone) is not stored, so large tables and saved notebooks do not grow (v0.6.1).
-const MISSING = /^(na|n\/a|nan|null|none|-)$/i;
 function importTable(columns, sourceRows) {
   const originalText = [];
   const decimalCol = columns.map((_, c) => {
@@ -185,34 +188,131 @@ function importTable(columns, sourceRows) {
 }
 async function readCsv(file) {
   if (!window.Papa) throw new Error('CSV reader did not load (PapaParse from cdnjs).');
-  const res = window.Papa.parse((await file.text()).replace(/^﻿/, ''), { skipEmptyLines: 'greedy' });
-  const [head, ...rows] = res.data;
-  return importTable(head.map((c, i) => String(c).trim() || `col${i + 1}`), rows);
+  const opts = { skipEmptyLines: 'greedy' };
+  if (/\.(tsv|tab)$/i.test(file.name || '')) opts.delimiter = '\t';
+  const res = window.Papa.parse((await file.text()).replace(/^\uFEFF/, ''), opts);
+  const data = (res.data || []).filter(r => Array.isArray(r) && r.some(c => String(c ?? '').trim() !== ''));
+  if (!data.length) throw new Error('CSV file is empty.');
+  const [head, ...rows] = data;
+  const width = rows.reduce((width, row) => Math.max(width, row.length), head.length);
+  return importTable(Array.from({ length: width }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows);
 }
+const BUILTIN_DATE_FMTS = new Set([14, 15, 16, 17, 22, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 50, 51, 52, 53, 54, 55, 56, 57, 58]);
+function isDateFormatCode(code) {
+  if (!code) return false;
+  const sec = String(code).split(';')[0]
+    .replace(/"[^"]*"/g, '')
+    .replace(/\\./g, '')
+    .replace(/\[[^\]]*\]/g, '')
+    .replace(/[_*]./g, '');
+  return /[yd]/i.test(sec) || (/(?:^|[^a-z])m{1,5}(?:[^a-z]|$)/i.test(sec) && !/[hs]/i.test(sec));
+}
+function excelSerialToIso(serial, date1904) {
+  if (!Number.isFinite(serial) || serial < 0) return serial;
+  const day = Math.floor(serial);
+  let secs = Math.round((serial - day) * 86400);
+  let carry = 0;
+  if (secs >= 86400) { secs = 0; carry = 1; }
+  const baseMs = date1904 ? Date.UTC(1904, 0, 1) : (day >= 60 ? Date.UTC(1899, 11, 30) : Date.UTC(1899, 11, 31));
+  const dt = new Date(baseMs + (day + carry) * 86400000);
+  const p2 = n => String(n).padStart(2, '0');
+  const datePart = `${dt.getUTCFullYear()}-${p2(dt.getUTCMonth() + 1)}-${p2(dt.getUTCDate())}`;
+  if (!secs) return datePart;
+  return `${datePart} ${p2(Math.floor(secs / 3600))}:${p2(Math.floor((secs % 3600) / 60))}:${p2(secs % 60)}`;
+}
+const resolveXlsxPath = target => {
+  const raw = String(target || '').replace(/\\/g, '/').trim();
+  if (!raw) return '';
+  const base = raw.startsWith('/') ? raw.slice(1) : (/^xl\//i.test(raw) ? raw : 'xl/' + raw);
+  const parts = [];
+  for (const seg of base.split('/')) {
+    if (!seg || seg === '.') continue;
+    if (seg === '..') parts.pop();
+    else parts.push(seg);
+  }
+  return parts.join('/');
+};
+const localTag = el => (el?.localName || el?.tagName || '').replace(/^.*:/, '');
+const richText = el => {
+  if (!el) return '';
+  let out = '';
+  for (const ch of el.childNodes || []) {
+    if (ch.nodeType !== 1) continue;
+    const tn = localTag(ch);
+    if (tn === 't') out += ch.textContent;
+    else if (tn === 'r') {
+      for (const rc of ch.childNodes || []) if (rc.nodeType === 1 && localTag(rc) === 't') out += rc.textContent;
+    }
+  }
+  return out;
+};
 async function readXlsx(file) {
   const z = await unzip(await file.arrayBuffer()), P = s => new DOMParser().parseFromString(s, 'application/xml');
+  const wbXml = await z.text('xl/workbook.xml'), relsXml = await z.text('xl/_rels/workbook.xml.rels');
+  if (!wbXml || !relsXml) throw new Error('Invalid Excel file: missing workbook structure.');
   const shared = [];
   const ss = await z.text('xl/sharedStrings.xml');
-  if (ss) for (const si of P(ss).getElementsByTagName('si')) shared.push([...si.getElementsByTagName('t')].map(t => t.textContent).join(''));
-  const wb = P(await z.text('xl/workbook.xml')), rels = P(await z.text('xl/_rels/workbook.xml.rels'));
+  if (ss) for (const si of P(ss).getElementsByTagName('si')) shared.push(richText(si));
+  const dateStyleIdx = new Set();
+  const stylesXml = await z.text('xl/styles.xml');
+  if (stylesXml) {
+    const sd = P(stylesXml), customDateFmts = new Set();
+    for (const nf of sd.getElementsByTagName('numFmt')) {
+      const id = +(nf.getAttribute('numFmtId') ?? -1);
+      if (isDateFormatCode(nf.getAttribute('formatCode'))) customDateFmts.add(id);
+    }
+    const cellXfs = sd.getElementsByTagName('cellXfs')[0];
+    if (cellXfs) {
+      let idx = 0;
+      for (const ch of cellXfs.childNodes || []) {
+        if (ch.nodeType !== 1 || localTag(ch) !== 'xf') continue;
+        const nfId = +(ch.getAttribute('numFmtId') ?? 0), apply = ch.getAttribute('applyNumberFormat');
+        if (apply !== '0' && (BUILTIN_DATE_FMTS.has(nfId) || customDateFmts.has(nfId))) dateStyleIdx.add(idx);
+        idx++;
+      }
+    }
+  }
+  const wb = P(wbXml), rels = P(relsXml);
+  const wbPr = wb.getElementsByTagName('workbookPr')[0];
+  const date1904 = wbPr ? /^(1|true)$/i.test(wbPr.getAttribute('date1904') || '') : false;
   const relMap = {}; for (const r of rels.getElementsByTagName('Relationship')) relMap[r.getAttribute('Id')] = r.getAttribute('Target');
   const out = {};
   for (const sh of wb.getElementsByTagName('sheet')) {
     const rid = sh.getAttribute('r:id') || sh.getAttributeNS('http://schemas.openxmlformats.org/officeDocument/2006/relationships', 'id');
-    let target = relMap[rid] || ''; target = target.startsWith('/') ? target.slice(1) : 'xl/' + target.replace(/^\.\//, '');
-    const xml = await z.text(target); if (!xml) continue;
+    const target = resolveXlsxPath(relMap[rid] || '');
+    const xml = target ? await z.text(target) : null; if (!xml) continue;
     const grid = [];
+    let nextRow = 0;
     for (const row of P(xml).getElementsByTagName('row')) {
-      const r = +row.getAttribute('r') - 1, arr = grid[r] = [];
+      const rAttr = row.getAttribute('r');
+      const r = rAttr && /^\d+$/.test(rAttr) ? +rAttr - 1 : nextRow;
+      nextRow = r + 1;
+      const arr = grid[r] || (grid[r] = []);
+      let nextCol = 0;
       for (const c of row.getElementsByTagName('c')) {
-        const ref = c.getAttribute('r') || '', col = ref.replace(/\d+/g, '').split('').reduce((s, ch) => s * 26 + ch.charCodeAt(0) - 64, 0) - 1;
-        const t = c.getAttribute('t'), v = c.getElementsByTagName('v')[0]?.textContent;
-        arr[col] = t === 's' ? shared[+v] : t === 'inlineStr' ? c.textContent : t === 'b' ? (v === '1') : t === 'str' || t === 'e' ? v : v != null ? +v : null;
+        const ref = c.getAttribute('r') || '', letters = ref.replace(/\d+/g, '');
+        const col = letters ? letters.split('').reduce((s, ch) => s * 26 + ch.charCodeAt(0) - 64, 0) - 1 : nextCol;
+        nextCol = col + 1;
+        const t = c.getAttribute('t'), vEl = c.getElementsByTagName('v')[0];
+        const vRaw = vEl ? vEl.textContent : null, v = vRaw != null && vRaw !== '' ? vRaw : null;
+        if (t === 's') arr[col] = v != null ? (shared[+v] ?? null) : null;
+        else if (t === 'inlineStr') {
+          const isEl = [...(c.childNodes || [])].find(n => n.nodeType === 1 && localTag(n) === 'is');
+          arr[col] = isEl ? richText(isEl) : null;
+        } else if (t === 'b') arr[col] = v != null ? (v === '1') : null;
+        else if (t === 'str' || t === 'e' || t === 'd') arr[col] = v;
+        else if (v != null) {
+          const numVal = Number(v);
+          if (Number.isFinite(numVal)) {
+            const sIdx = c.getAttribute('s');
+            arr[col] = sIdx != null && dateStyleIdx.has(+sIdx) ? excelSerialToIso(numVal, date1904) : numVal;
+          } else arr[col] = v;
+        } else arr[col] = null;
       }
     }
     const rows = Array.from(grid, r => r || []).filter(r => r.some(v => v != null && v !== ''));
     if (!rows.length) continue;
-    const head = rows[0], n = Math.max(...rows.map(r => r.length));
+    const head = rows[0], n = rows.reduce((width, row) => Math.max(width, row.length), 0);
     out[sh.getAttribute('name')] = importTable(Array.from({ length: n }, (_, i) => String(head[i] ?? '').trim() || `col${i + 1}`), rows.slice(1));
   }
   return out;
@@ -294,11 +394,11 @@ async function tflow(file) {
   const d = JSON.parse(json || '{}');
   const lines = [`### Thistle Flow ${d.kind || 'workspace'}: ${d.name || file.name}`, `Saved by Thistle Flow v${d.appVersion || '?'} (format ${d.format ?? d.version ?? '?'})`];
   const samples = d.samples || d.workspace?.samples || [];
-  if (samples.length) lines.push('', `#### Samples (${samples.length})`, ...samples.slice(0, 200).map(s => `- ${s.name || s.fileName || s.key}${s.events ? ` (${s.events} events)` : ''}`));
+  if (samples.length) lines.push('', `#### Samples (${samples.length})`, ...samples.slice(0, 200).map(s => typeof s === 'string' ? `- ${s}` : `- ${s.name || s.fileName || s.key || '?'}${s.events ? ` (${s.events} events)` : ''}`));
   const gates = d.gates || d.workspace?.gates || [];
   if (gates.length) {
     const byId = Object.fromEntries(gates.map(g => [g.id, g]));
-    const path = g => { const p = []; let c = g; while (c) { p.unshift(c.name); c = byId[c.parent]; } return p.join(' / '); };
+    const path = g => { const p = [], visited = new Set(); let c = g; while (c && !visited.has(c)) { visited.add(c); p.unshift(c.name); c = byId[c.parent]; } return p.join(' / '); };
     lines.push('', `#### Gating hierarchy (${gates.length} gates)`, ...gates.map(g => `- ${path(g)} — ${g.type} on ${[g.x, g.y].filter(Boolean).join(' vs ')}`));
   }
   lines.push('', 'Note: population statistics are computed in Thistle Flow from the FCS files. Use "Import from Thistle Flow" (🔬 Thistle panel) or add Thistle Flow\'s exported statistics CSV as a dataset.');
