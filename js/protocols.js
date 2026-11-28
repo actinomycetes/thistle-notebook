@@ -43,7 +43,8 @@ export const snapshot = (p, author) => { const c = curV(p); return { pid: p.id, 
 
 /** Markdown inserted into an entry section. */
 export function referenceMd(snap, { deviations = '', copySteps = false } = {}) {
-  const ref = snap.wiki ? `[${snap.title}](wiki:${snap.wiki})` : `**${snap.title}**`;
+  const safeTitle = String(snap.title || '').replace(/[\[\]]/g, '\\$&');
+  const ref = snap.wiki ? `[${safeTitle}](wiki:${snap.wiki})` : `**${snap.title}**`;
   const out = [`Followed ${ref} (protocol version ${snap.v}).`];
   if (deviations.trim()) out.push(`Deviations from the protocol: ${deviations.trim()}`);
   if (copySteps && snap.body.trim()) out.push(`**Protocol as followed (copy of version ${snap.v}):**\n\n${snap.body.trim()}`);
@@ -55,7 +56,8 @@ export const searchText = p => { const c = curV(p); return `${c.title} ${c.tags}
 export function libraryFile(protocols) {
   return JSON.stringify({ app: APP_TITLE, format: 3, appVersion: APP_VERSION, kind: 'protocols', savedAt: new Date().toISOString(), protocols });
 }
-/** Merge protocols from a library file. Known protocols gain the versions and events they lack (by time); nothing is
+const versionKey = v => `${v.t}|${v.author || ''}|${v.title || ''}|${v.body || ''}|${v.wiki || ''}|${v.tags || ''}`;
+/** Merge protocols from a library file. Known protocols gain the versions and events they lack; nothing is
  *  removed or overwritten. Returns {added, updated, merged:[protocol records to store]}. */
 export function mergeLibrary(existing, incoming) {
   const byId = new Map(existing.map(p => [p.id, p])), out = []; let added = 0, updated = 0;
@@ -63,8 +65,8 @@ export function mergeLibrary(existing, incoming) {
     if (!q?.id || !Array.isArray(q.versions) || !q.versions.length) continue;
     const p = byId.get(q.id);
     if (!p) { out.push(q); added++; continue; }
-    const seen = new Set(p.versions.map(v => `${v.t}|${v.author}`)), extra = q.versions.filter(v => !seen.has(`${v.t}|${v.author}`));
-    const seenE = new Set((p.events || []).map(e => `${e.t}|${e.what}`)), extraE = (q.events || []).filter(e => !seenE.has(`${e.t}|${e.what}`));
+    const seen = new Set(p.versions.map(versionKey)), extra = q.versions.filter(v => !seen.has(versionKey(v)));
+    const seenE = new Set((p.events || []).map(e => `${e.t}|${e.what}|${e.author || ''}|${e.visibility || ''}`)), extraE = (q.events || []).filter(e => !seenE.has(`${e.t}|${e.what}|${e.author || ''}|${e.visibility || ''}`));
     if (!extra.length && !extraE.length) continue;
     // existing version numbers never change (entries quote them); versions from the file are appended after them
     let n = Math.max(...p.versions.map(v => v.v));

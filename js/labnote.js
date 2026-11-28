@@ -61,6 +61,14 @@ export const isFinal = e => !!finalEvent(e);
 export const witnesses = e => (e.events || []).filter(x => x.what === 'witnessed');
 export function sealPayload(e, files = []) {
   const sections = {};
+  for (const k of Object.keys(e.fields || {}).sort()) sections[k] = cur(e.fields[k]);
+  const cmp = (a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0);
+  return JSON.stringify({ type: e.type, sections, protocols: (e.protocolsUsed || []).map(p => ({ pid: p.pid, v: p.v, title: p.title, body: p.body })),
+    files: [...files].sort(cmp).map(f => [f.name, f.sha256]) });
+}
+/** Legacy v0.9.0 seal payload (localeCompare + raw field key order) kept only to verify entries sealed before deterministic sorting. */
+export function legacySealPayload(e, files = []) {
+  const sections = {};
   for (const k of Object.keys(e.fields || {})) sections[k] = cur(e.fields[k]);
   return JSON.stringify({ type: e.type, sections, protocols: (e.protocolsUsed || []).map(p => ({ pid: p.pid, v: p.v, title: p.title, body: p.body })),
     files: [...files].sort((a, b) => a.name.localeCompare(b.name)).map(f => [f.name, f.sha256]) });
@@ -89,9 +97,10 @@ export function changeLog(obj, labels = {}) {
 export function contributors(e) {
   const n = new Map();
   for (const f of Object.values(e.fields || {})) for (const r of f.revs || []) n.set(r.author, (n.get(r.author) || 0) + 1);
+  for (const a of e.amendments || []) if (a.author) n.set(a.author, (n.get(a.author) || 0) + 1);
   return [...n.entries()].sort((a, b) => b[1] - a[1]);
 }
-export const lastChange = e => Math.max(e.created || 0, ...Object.values(e.fields || {}).flatMap(f => (f.revs || []).map(r => r.t)), ...(e.events || []).map(x => x.t));
+export const lastChange = e => Math.max(e.created || 0, ...Object.values(e.fields || {}).flatMap(f => (f.revs || []).map(r => r.t)), ...(e.events || []).map(x => x.t), ...(e.amendments || []).map(a => a.t || 0));
 
 // ---------- updates written by the model in the chat ----------
 // ```lab-note {"section": "procedure", "op": "append" | "replace", "text": "...", "target": "entry" | "study"} ```
@@ -111,8 +120,28 @@ export function parseLabUpdates(text) {
 
 // ---------- references inside note Markdown ----------
 // ![caption](attachment:plate.png)  [raw data](attachment:zones.csv)  [Kirby-Bauer protocol](wiki:Kirby-Bauer Disk Diffusion Susceptibility Test Protocol)
-// wiki:SPACE:Title links to a page in another wiki space. Spaces in link targets are allowed: <…> or plain.
-const fixTargets = md => String(md || '').replace(/\]\((attachment|wiki):([^)\n]+)\)/g, (_, k, t) => `](${k}:${encodeURIComponent(t.trim().replace(/^<|>$/g, ''))})`);
+// wiki:SPACE:Title links to a page in another wiki space. Spaces and balanced parentheses (e.g. plate (2).png) in link targets are supported.
+const encodeTarget = t => encodeURIComponent(t.trim().replace(/^<|>$/g, '')).replace(/\(/g, '%28').replace(/\)/g, '%29');
+export function fixTargets(md, prefix = '') {
+  const s = String(md || ''); let out = '', i = 0;
+  while (i < s.length) {
+    const m = /\]\((attachment|wiki):/.exec(s.slice(i));
+    if (!m) { out += s.slice(i); break; }
+    const start = i + m.index, bodyStart = start + m[0].length;
+    out += s.slice(i, start);
+    let j = bodyStart, depth = 0, closed = false;
+    while (j < s.length && s[j] !== '\n') {
+      if (s[j] === '(') depth++;
+      else if (s[j] === ')') { if (depth === 0) { closed = true; break; } depth--; }
+      j++;
+    }
+    if (!closed) { out += s.slice(start, bodyStart); i = bodyStart; continue; }
+    const target = s.slice(bodyStart, j);
+    out += `](${prefix}${m[1]}:${encodeTarget(target)})`;
+    i = j + 1;
+  }
+  return out;
+}
 const decodeTarget = href => decodeURIComponent(href.replace(/^(attachment|wiki):/, ''));
 
 // ---------- Confluence wiki markup (Confluence: Insert → Markup → "Confluence wiki") ----------
@@ -129,7 +158,12 @@ function wikiInline(tokens, ctx) {
       case 'strong': out += `*${wikiInline(t.tokens, ctx)}*`; break;
       case 'em': out += `_${wikiInline(t.tokens, ctx)}_`; break;
       case 'del': out += `-${wikiInline(t.tokens, ctx)}-`; break;
-      case 'codespan': out += `{{${t.text.replace(/[{}]/g, '\\$&')}}}`; break;
+      case 'codespan': {
+        let code = decodeEntities(t.text).replace(/[{}]/g, '\\$&');
+        if (ctx.inTable) code = code.replace(/\|/g, '\\|');
+        out += `{{${code}}}`;
+        break;
+      }
       case 'br': out += '\n'; break;
       case 'link': {
         const label = wikiInline(t.tokens, ctx), href = t.href || '';
@@ -157,10 +191,11 @@ function wikiBlocks(tokens, ctx, depth = 0) {
     switch (t.type) {
       case 'heading': out.push(`h${Math.min((ctx.headingBase ?? 3) + t.depth, 6)}. ${wikiInline(t.tokens, ctx)}`); break;
       case 'paragraph': out.push(wikiInline(t.tokens, ctx)); break;
-      case 'text': out.push(t.tokens ? wikiInline(t.tokens, ctx) : wikiEsc(t.text)); break;
+      case 'text': out.push(t.tokens ? wikiInline(t.tokens, ctx) : wikiEsc(decodeEntities(t.text))); break;
       case 'list': out.push(wikiList(t, ctx, '')); break;
       case 'table': {
-        const cell = c => wikiInline(c.tokens, ctx).replace(/\n/g, ' ') || ' ';
+        const tctx = { ...ctx, inTable: true };
+        const cell = c => wikiInline(c.tokens, tctx).replace(/\n/g, ' ') || ' ';
         out.push([`||${t.header.map(cell).join('||')}||`, ...t.rows.map(r => `|${r.map(cell).join('|')}|`)].join('\n'));
         break;
       }
@@ -179,12 +214,15 @@ function wikiList(list, ctx, prefix) {
   return list.items.map(it => {
     const parts = [], subs = [];
     for (const t of it.tokens) (t.type === 'list' ? subs : parts).push(t);
-    const head = parts.map(p => (p.tokens ? wikiInline(p.tokens, ctx) : wikiEsc(p.text || ''))).join(' ').replace(/\n+/g, ' ');
+    const head = parts.map(p => (p.tokens ? wikiInline(p.tokens, ctx) : wikiEsc(decodeEntities(p.text || '')))).join(' ').replace(/\n+/g, ' ');
     const task = it.task ? (it.checked ? '(/) ' : '(x) ') : '';
     return [`${mark} ${task}${head}`, ...subs.map(s => wikiList(s, ctx, mark))].join('\n');
   }).join('\n');
 }
-const decodeEntities = s => String(s).replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e]));
+const decodeEntities = s => String(s)
+  .replace(/&#x([0-9a-f]+);/gi, (_, h) => String.fromCodePoint(parseInt(h, 16)))
+  .replace(/&#(\d+);/g, (_, d) => String.fromCodePoint(parseInt(d, 10)))
+  .replace(/&(amp|lt|gt|quot|#39);/g, (_, e) => ({ amp: '&', lt: '<', gt: '>', quot: '"', '#39': "'" }[e]));
 const lex = md => window.marked.lexer(fixTargets(md), { gfm: true, breaks: true });
 // headingBase 3: inside an assay page (sections are h3, so ## becomes h5); 0: a page of its own (## stays h2)
 export function mdToWiki(md, ctx = { files: new Set(), imageWidth: 450 }) { return wikiBlocks(lex(md), { files: new Set(), imageWidth: 450, ...ctx }); }
@@ -230,10 +268,11 @@ export function entryToHtml(e, { wikiUrl = () => null, footer = true } = {}) {
   if (footer) parts.push(provenance(e, s => `<p><em>${escH(s)}</em></p>`));
   return parts.join('\n');
 }
+const mdEsc = s => String(s).replace(/[\\*_`~[\]]/g, '\\$&');
 export function mdToHtml(md, wikiUrl = () => null) {
   const src = fixTargets(md)
-    .replace(/!\[([^\]]*)\]\(attachment:([^)]+)\)/g, (_, c, f) => `*[Figure: ${decodeURIComponent(f)}${c ? ' — ' + c : ''}]*`)
-    .replace(/\[([^\]]+)\]\(attachment:([^)]+)\)/g, (_, c, f) => `${c} (attachment ${decodeURIComponent(f)})`)
+    .replace(/!\[([^\]]*)\]\(attachment:([^)]+)\)/g, (_, c, f) => `*[Figure: ${mdEsc(decodeURIComponent(f))}${c ? ' — ' + mdEsc(c) : ''}]*`)
+    .replace(/\[([^\]]+)\]\(attachment:([^)]+)\)/g, (_, c, f) => `${c} (attachment ${mdEsc(decodeURIComponent(f))})`)
     .replace(/\[([^\]]+)\]\(wiki:([^)]+)\)/g, (_, c, t) => { const u = wikiUrl(decodeURIComponent(t)); return u ? `[${c}](${u})` : c; });
   return window.DOMPurify.sanitize(window.marked.parse(src, { gfm: true, breaks: true }));
 }

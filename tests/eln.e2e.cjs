@@ -162,6 +162,27 @@ const block = o => '```lab-note\n' + JSON.stringify(o) + '\n```';
   ok(await page.waitForSelector('#modalBody .err-box:has-text("does NOT match its seal")').then(() => true, () => false), 'the seal check detects content changed outside the app');
   await page.keyboard.press('Escape');
 
+  // ---------- finalised entry immutability guards ----------
+  // clicking an empty section hint on a finalised entry must not open an editor
+  await page.click('#labPanel .lab-sec[data-key="conclusions"] .lab-hint').catch(() => {});
+  ok(!(await page.$('#labPanel .lab-sec[data-key="conclusions"] textarea')), 'clicking an empty section on a finalised entry does not open an editor');
+  // history dialog on a finalised entry must not offer Restore
+  await page.click('#labPanel .lab-sec[data-key="aim"] button[title="All versions of this section"]');
+  ok(!(await page.$('#modalBody button:has-text("Restore this version")')), 'history dialog hides Restore on a finalised entry');
+  await page.keyboard.press('Escape');
+  // entry menu on a finalised entry must not offer Change type
+  await page.click('#labPanel .lab-menu-btn');
+  ok(!(await page.$('#popover .menu-item:has-text("Change type")')), 'entry menu hides Change type on a finalised entry');
+  await page.keyboard.press('Escape');
+  // programmatic insertIntoEntry and addAttachments must refuse a finalised entry
+  const blocked = await page.evaluate(async () => {
+    const L = window.thistleNotebook.lab, e = L.activeEntry();
+    const ins = await L.insertIntoEntry(e, 'x', { pid: 'p', v: 1, title: 'T', body: '' });
+    const att = await L.addAttachments(e, [{ blob: new Blob(['a']), name: 'extra.txt', type: 'text/plain' }], { quiet: true });
+    return { ins, attLen: att.length };
+  });
+  ok(blocked.ins === false && blocked.attLen === 0, 'insertIntoEntry and addAttachments refuse a finalised entry');
+
   // ---------- disconnecting a folder deletes nothing ----------
   await page.click('#labPanel button:has-text("Protocols")'); await page.click('#modalBody button:has-text("Folders")');
   await page.click('#modalBody tr:has-text("Lab folder") button:has-text("Disconnect")');
