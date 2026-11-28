@@ -4,7 +4,7 @@ import {
   newProtocol, saveVersion, setVisibility, duplicate, snapshot, referenceMd, curV, isDeleted, visibleTo, canEdit, searchText,
   libraryFile, mergeLibrary,
 } from './protocols.js';
-import { mdToWiki, fmtTime } from './labnote.js';
+import { mdToWiki, fmtTime, isFinal } from './labnote.js';
 import { canKeepFolders, protocolFileName, protocolFile, protocolsInFile } from './folders.js';
 
 export function createProtocols(ctx) {
@@ -18,17 +18,28 @@ export function createProtocols(ctx) {
 
   // ---------- folders: public protocols → lab folder; private → the owner's private folder ----------
   const folderOf = p => (p.visibility === 'public' ? ['lab', null] : ['private', p.owner]);
-  /** Write a protocol to its folder: read the file there first and merge, so nobody's versions are lost. */
+  /** Write a protocol to its folder: read any existing file for this id first and merge, so nobody's versions are lost (even after a rename). */
   async function syncOut(p) {
     const [which, owner] = folderOf(p);
     if (which === 'private' && owner !== me()) return 'skip';
     const dir = await F.ready(which, owner);
     if (!dir) { if ((await F.status(which, owner)).state !== 'none') P.pending.add(p.id); return 'pending'; }
     try {
-      const name = protocolFileName(p), onDisk = await F.readFile(dir, name);
-      let out = p;
-      if (onDisk && onDisk.id === p.id) {
-        out = mergeLibrary([onDisk], [p]).merged[0] || onDisk;          // the file gains our new versions
+      const matches = F.findById ? await F.findById(dir, p.id) : [];
+      const canonical = protocolFileName(p);
+      let name = canonical, out = p;
+      const onDiskList = matches.length ? matches.map(m => m.protocol) : [];
+      if (!onDiskList.length) {
+        const direct = await F.readFile(dir, canonical);
+        if (direct && direct.id === p.id) onDiskList.push(direct);
+      } else if (!matches.some(m => m.name === canonical)) {
+        // reuse the existing file name when renamed so we don't leave a stale duplicate file behind
+        name = matches[0].name;
+      }
+      if (onDiskList.length) {
+        let base = onDiskList[0];
+        for (let i = 1; i < onDiskList.length; i++) base = mergeLibrary([base], [onDiskList[i]]).merged[0] || base;
+        out = mergeLibrary([base], [p]).merged[0] || base;                // the file gains our new versions
         const back = mergeLibrary([p], [out]).merged[0];                  // and we gain the file's (another person's)
         if (back) { await put(back); }
       }
@@ -138,7 +149,7 @@ export function createProtocols(ctx) {
       isDeleted(p) ? h('div', { class: 'warn-box' }, 'This protocol is deleted (kept in the library and restorable).') : null,
       h('div', { class: 'proto-body' }, c.body.trim() ? md(c.body) : h('p', { class: 'hint' }, '(no steps written)')),
       h('div', { class: 'proto-tools' },
-        !isDeleted(p) && entry ? h('button', { class: 'btn small primary', title: 'Add a reference (and optionally a copy of the steps) to the current lab-note entry', onclick: () => insertDialog(entry, null, p) }, '📓 Insert into current entry') : null,
+        !isDeleted(p) && entry && !isFinal(entry) ? h('button', { class: 'btn small primary', title: 'Add a reference (and optionally a copy of the steps) to the current lab-note entry', onclick: () => insertDialog(entry, null, p) }, '📓 Insert into current entry') : null,
         mine && !isDeleted(p) ? h('button', { class: 'btn small', onclick: () => editDialog(p) }, '✎ Edit (new version)') : null,
         !isDeleted(p) ? h('button', { class: 'btn small', title: 'Make your own private copy', onclick: async () => { const who = await ctx.author(); if (!who) return; const d = duplicate(p, me(), who); await store(d); toast('Copied to your private protocols'); viewDialog(d); } }, '⎘ Duplicate') : null,
         mine && !isDeleted(p) ? h('button', { class: 'btn small', onclick: async () => { const who = await ctx.author(); if (!who) return; setVisibility(p, p.visibility === 'public' ? 'private' : 'public', who); await store(p); viewDialog(p); } }, p.visibility === 'public' ? '🔒 Make private' : '👥 Make public') : null,
@@ -227,11 +238,13 @@ export function createProtocols(ctx) {
   }
   async function importLibrary(file) {
     let d; try { d = JSON.parse(await file.text()); } catch { return toast(`“${file.name}” is not a protocol library file`, true); }
-    if (String(d?.app || '').replace(/\s+/g, '').toLowerCase() !== 'thistlenotebook' || d.kind !== 'protocols') return toast(d?.kind === 'notebook' ? `“${file.name}” is a notebook: open it with 📂 Open in the header` : `“${file.name}” is not a protocol library file`, true);
+    const isTN = String(d?.app || '').replace(/\s+/g, '').toLowerCase() === 'thistlenotebook';
+    const incoming = isTN && d.kind === 'protocols' && Array.isArray(d.protocols) ? d.protocols : isTN && d.kind === 'protocol' && d.protocol ? [d.protocol] : null;
+    if (!incoming) return toast(d?.kind === 'notebook' ? `“${file.name}” is a notebook: open it with 📂 Open in the header` : `“${file.name}” is not a protocol library file`, true);
     await load();
-    const { added, updated, merged } = mergeLibrary(P.all, d.protocols);
+    const { added, updated, merged } = mergeLibrary(P.all, incoming);
     for (const p of merged) await store(p);
-    toast(`Library opened: ${added} new, ${updated} updated, ${(d.protocols || []).length - added - updated} already up to date`);
+    toast(`Library opened: ${added} new, ${updated} updated, ${incoming.length - added - updated} already up to date`);
   }
 
   // ---------- inserting into a lab-note entry ----------
