@@ -28,7 +28,7 @@ export function renderMarkdown(text, { cites = {}, web = [], onCite, cardSlot, l
       const ids = [];
       m[1].split(/\s*[,;]\s*/).forEach(part => {
         const r = part.match(/^(W?)(\d+)\s*[–-]\s*W?(\d+)$/);
-        if (r) for (let i = +r[2]; i <= Math.min(+r[3], +r[2] + 30); i++) ids.push(r[1] + i); else ids.push(part.trim());
+        if (r) for (let i = +r[2]; i <= Math.min(+r[3], +r[2] + 30, Number.MAX_SAFE_INTEGER); i++) ids.push(r[1] + i); else ids.push(part.trim());
       });
       const wrap = document.createElement('span'); wrap.className = 'cites';
       ids.forEach(id => {

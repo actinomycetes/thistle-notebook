@@ -590,7 +590,7 @@ function plainAnswer(m) {
       const ns = [];
       for (const part of g.split(/[,;]/)) {
         const rm = /^\s*(\d+)\s*[–-]\s*(\d+)\s*$/.exec(part);
-        if (rm) { const a = +rm[1], b = Math.min(+rm[2], a + 30); for (let n = a; n <= b; n++) if (c[n] && !ns.includes(n)) ns.push(n); }
+        if (rm) { const a = +rm[1], b = Math.min(+rm[2], a + 30, Number.MAX_SAFE_INTEGER); for (let n = a; n <= b; n++) if (c[n] && !ns.includes(n)) ns.push(n); }
         else { const n = +part.trim(); if (c[n] && !ns.includes(n)) ns.push(n); }
       }
       return ns.length ? `(${ns.map(n => `${c[n].source}, ${c[n].loc}`).join('; ')})` : all;
@@ -1064,7 +1064,7 @@ const citedNumbers = content => {
   for (const m of String(content || '').matchAll(/\[(\d+(?:\s*[,;–-]\s*\d+)*)\]/g)) {
     for (const part of m[1].split(/\s*[,;]\s*/)) {
       const r = part.match(/^(\d+)\s*[–-]\s*(\d+)$/);
-      if (r) { const a = +r[1], b = Math.min(+r[2], a + 30); for (let i = a; i <= b; i++) nums.add(i); }
+      if (r) { const a = +r[1], b = Math.min(+r[2], a + 30, Number.MAX_SAFE_INTEGER); for (let i = a; i <= b; i++) nums.add(i); }
       else if (/^\d+$/.test(part.trim())) nums.add(+part.trim());
     }
   }
